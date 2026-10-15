@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Neoprars Project Memory V1.4.1 — local stdlib CLI."""
+"""Neoprars Project Memory V1.4.2 — local stdlib CLI."""
 import sys
 sys.dont_write_bytecode = True
 import argparse
+import copy
 import datetime as dt
 import json
 import math
@@ -12,7 +13,7 @@ from audit import audit_project, git_read, render, EXCLUDED, SENSITIVE
 from start import start_project, render_start
 from store import Store, READ_DEFAULTS, scrub
 from safety import safe_path
-from workflow import prepare, apply, event_base, snapshot
+from workflow import prepare, apply, event_base, snapshot, source_registry
 
 ROADMAP_NAMES = ('ROADMAP.md','ROADMAP.txt','roadmap.md','roadmap.txt')
 STATE_NAMES = ('PROJECT_STATE.md','PROJECT_STATE.txt')
@@ -36,6 +37,7 @@ EXTRA = (
     ('add-conflict','Preparar conflicto con alternativas','add-conflict --help'),
     ('resolve-conflict','Preparar resolucion supervisada','resolve-conflict --help'),
     ('apply','Persistir propuesta exacta confirmada','apply --proposal work/proposal.json --mode supervised --approval-sha256 HUELLA --approved-by usuario'),
+    ('close-fast','Preparar cierre local sin repetir pruebas vigentes','close-fast --date 2026-10-15 --done "Trabajo confirmado"'),
 )
 
 
@@ -83,8 +85,78 @@ def roadmap_text(store,args):
     return scrub('FUENTE CANDIDATA: '+source+'\n'+contents)
 
 
+GIT_LIST_LIMIT = 20
+
+
+def _git_lines(value, limit=GIT_LIST_LIMIT):
+    lines = [scrub(line) for line in value.splitlines()] if value else []
+    return lines[:limit], len(lines), len(lines) > limit
+
+
+def summarize_git(name, value, detail=False):
+    """Compact, read-only view of a Git query; None always means not verified, never clean."""
+    if value is None:
+        return {'verified': False}
+    if name == 'head':
+        return {'verified': True, 'output': scrub(value)}
+    if name == 'status':
+        lines = value.splitlines()
+        branch = next((scrub(line[3:]) for line in lines if line.startswith('## ')), None)
+        entries = [line for line in lines if not line.startswith('## ')]
+        untracked = sum(1 for line in entries if line.startswith('??'))
+        staged = sum(1 for line in entries if line[:1] not in (' ', '?', '!'))
+        paths, total, truncated = _git_lines('\n'.join(entries))
+        item = {'verified': True, 'branch': branch, 'total': total, 'tracked_changes': total - untracked,
+                'untracked': untracked, 'staged': staged, 'paths': paths, 'truncated': truncated}
+    else:
+        findings, total, truncated = _git_lines(value)
+        item = {'verified': True, 'clean': total == 0, 'total_lines': total, 'findings': findings, 'truncated': truncated}
+    if detail:
+        item['output'] = scrub(value)
+    return item
+
+
+def prepare_fast_close(store, data, detail=False):
+    """Reuse close validation and persistence; never execute tests or mutate Git."""
+    sessions = store.sessions()
+    if store.issues:
+        raise ValueError('Sesiones no verificables; no se puede descartar duplicado.')
+    # prepare congela el hash de cada evidencia; se compara contra la misma forma, sin mutar data.
+    candidate = copy.deepcopy(data)
+    if candidate.get('evidence'):
+        registry = {x['id']: x for x in source_registry(store)['sources']}
+        for proof in candidate['evidence']:
+            known = registry.get(proof.get('source_id')) if isinstance(proof, dict) else None
+            if known:
+                proof.setdefault('sha256', known['sha256'])
+    fields = set(candidate) - {'id', 'created_at'}
+    duplicate = next((item for item in sessions
+        if all(item.get(key) == candidate[key] for key in fields)), None)
+    if duplicate:
+        result = {'read_only': True, 'duplicate': True, 'existing_id': duplicate.get('id'),
+                  'next': 'Cierre equivalente ya registrado; no aplicar otra sesion.'}
+    else:
+        result = prepare(store, 'close', data)  # mismo ID con contenido distinto sigue rechazado
+        result['duplicate'] = False
+    git = {}
+    for key, command in (
+        ('head', ('rev-parse', '--verify', 'HEAD')),
+        ('status', ('status', '--short', '--branch', '--untracked-files=normal')),
+        ('diff_check', ('diff', '--check')),
+        ('cached_diff_check', ('diff', '--cached', '--check')),
+    ):
+        remaining = store.deadline - time.monotonic()
+        # git diff --check devuelve 2 cuando hay hallazgos: es un resultado valido, no un fallo.
+        value = git_read(store.root, *command, timeout=min(5, remaining),
+                         accept=(0, 2) if 'diff' in command else (0,)) if remaining > 0 else None
+        git[key] = summarize_git(key, value, detail)
+    result['git'] = git
+    result['tests_executed'] = False
+    return result
+
+
 def main():
-    parser=argparse.ArgumentParser(description='Neoprars Project Memory V1.4.1; start es el punto de entrada recomendado')
+    parser=argparse.ArgumentParser(description='Neoprars Project Memory V1.4.2; start es el punto de entrada recomendado')
     parser.add_argument('--project')
     sub=parser.add_subparsers(dest='cmd',required=True)
     parsers={name:sub.add_parser(name,help=description,description=description,epilog='Ejemplo: '+example)
@@ -116,21 +188,23 @@ def main():
     p.add_argument('--technical',action='store_true',help='Incluir anexo tecnico de contexto')
     p.add_argument('--full-documents',action='store_true',help='Incluir estado y roadmap completos; por defecto solo referencias')
     parsers['roadmap'].add_argument('--mode',choices=('full','pending','handoff'),default='full')
-    for name in ('close','add-decision','add-conflict','resolve-conflict'):
+    for name in ('close','close-fast','add-decision','add-conflict','resolve-conflict'):
         p=parsers[name]
         p.add_argument('--id')
         p.add_argument('--date',required=True)
         p.add_argument('--evidence',action='append',default=[],help='JSON source_id, sha256 opcional y lines opcional')
         p.add_argument('--classification',choices=('confirmado','historico','propuesto','desconocido'),default='confirmado')
         p.add_argument('--status',choices=('pendiente','implementado','validado','cerrado','no_aplica'),default='pendiente')
-    p=parsers['close']
-    p.add_argument('--module',default='general')
-    p.add_argument('--done',required=True)
-    for key in ('pending','tests','files'):
-        p.add_argument('--'+key,default='')
-    p.add_argument('--tests-status',choices=('aprobadas','fallidas','no_ejecutadas','desconocidas'),default='desconocidas')
-    p.add_argument('--decision-id',action='append',default=[])
-    p.add_argument('--conflict-id',action='append',default=[])
+    for name in ('close','close-fast'):
+        p=parsers[name]
+        p.add_argument('--module',default='general')
+        p.add_argument('--done',required=True)
+        for key in ('pending','tests','files'):
+            p.add_argument('--'+key,default='')
+        p.add_argument('--tests-status',choices=('aprobadas','fallidas','no_ejecutadas','desconocidas'),default='desconocidas')
+        p.add_argument('--decision-id',action='append',default=[])
+        p.add_argument('--conflict-id',action='append',default=[])
+    parsers['close-fast'].add_argument('--git-detail',action='store_true',help='Incluir salida Git completa (puede ser extensa)')
     p=parsers['add-decision']
     for key in ('title','reason','detail'):
         p.add_argument('--'+key,required=True)
@@ -162,7 +236,7 @@ def main():
                   (render_start(report) if args.cmd=='start' else render(report)))
             return
         if args.cmd=='help':
-            print('NEOPRARS PROJECT MEMORY V1.4.1 — start: punto de entrada recomendado')
+            print('NEOPRARS PROJECT MEMORY V1.4.2 — start: punto de entrada recomendado')
             for name,description,example in COMMANDS+EXTRA:
                 print(f'{name:<10} {description}\n           Ejemplo: {example}')
             print('Solo lectura: start, audit y propuestas. Escritura: apply supervised y exportaciones solicitadas.\n'
@@ -174,8 +248,8 @@ def main():
             if contents is None or store.budget.coverage[-1]['status']!='completa':
                 raise ValueError('Propuesta no verificable.')
             result=apply(store,json.loads(contents),args.approval_sha256,args.approved_by,args.mode)
-        elif args.cmd in ('initialize','register-source','close','add-decision','add-conflict','resolve-conflict'):
-            kind={'initialize':'initialize','register-source':'source','close':'close','add-decision':'decision',
+        elif args.cmd in ('initialize','register-source','close','close-fast','add-decision','add-conflict','resolve-conflict'):
+            kind={'initialize':'initialize','register-source':'source','close':'close','close-fast':'close','add-decision':'decision',
                   'add-conflict':'conflict','resolve-conflict':'resolution'}[args.cmd]
             if kind=='initialize':
                 data={}
@@ -195,7 +269,7 @@ def main():
                 else:
                     data.update(title='Resolucion de '+args.conflict_id,resolves=args.conflict_id,
                                 choice=args.choice,reason=args.reason,resolution='supervisada')
-            result=prepare(store,kind,data)
+            result=(prepare_fast_close(store,data,args.git_detail) if args.cmd=='close-fast' else prepare(store,kind,data))
         else:
             result=query(store,args,limits)
         if args.cmd=='handoff' and not args.json:

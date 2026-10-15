@@ -2,7 +2,7 @@
 
 Memoria local de proyectos y transferencia de contexto para asistentes de IA.
 
-**Estado: beta.** Version del codigo: 1.4.1. Python 3.10 o posterior; sin paquetes externos. Compatible con flujos Codex, con handoff portable para cualquier asistente que pueda leer Markdown. La primera prueba de comprension se realizo con Copilot; no se afirma validacion con otros proveedores.
+**Estado: beta.** Version del codigo: 1.4.2. Python 3.10 o posterior; sin paquetes externos. Compatible con flujos Codex, con handoff portable para cualquier asistente que pueda leer Markdown. La primera prueba de comprension se realizo con Copilot; no se afirma validacion con otros proveedores.
 
 ## Capacidades
 

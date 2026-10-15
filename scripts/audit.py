@@ -56,7 +56,7 @@ def safe_label(value):
     return value
 
 
-def git_read(root, *args, timeout=5):
+def git_read(root, *args, timeout=5, accept=(0,)):
     executable = shutil.which('git')
     if not executable:
         return None
@@ -69,7 +69,7 @@ def git_read(root, *args, timeout=5):
         result = subprocess.run([executable, '--no-optional-locks', '--no-replace-objects', *args], cwd=root,
                                 env=environment, capture_output=True, text=True,
                                 encoding='utf-8', errors='replace', timeout=timeout)
-        return result.stdout.strip() if result.returncode == 0 else None
+        return result.stdout.strip() if result.returncode in accept else None
     except (OSError, subprocess.TimeoutExpired):
         return None
 

@@ -80,6 +80,144 @@ class WorkflowTests(unittest.TestCase):
             apply(self.store(),altered,proposal['approval_sha256'],'fixture-user','supervised')
         self.assertEqual(before,fixtures.snapshot(self.root))
 
+    def test_fast_close_records_locally_and_skips_equivalent_session(self):
+        self.seed()
+        self.commit('decision', self.decision())
+        options = ('--date','2026-10-15','--done','Avance comprobado',
+                   '--pending','Pendiente real','--tests','Resultado previo vigente',
+                   '--tests-status','aprobadas','--decision-id','d1',
+                   '--evidence','{"source_id":"facts"}')
+        before = fixtures.snapshot(self.root)
+        envelope = json.loads(self.cli('close-fast', *options))
+        self.assertEqual(before, fixtures.snapshot(self.root))
+        self.assertFalse(envelope['tests_executed'])
+        self.assertFalse(envelope['duplicate'])
+        self.assertEqual(envelope['proposal']['kind'], 'close')
+        self.assertEqual(envelope['proposal']['data']['decisions'], ['d1'])
+        self.confirm(json.dumps(envelope))
+        before = fixtures.snapshot(self.root)
+        duplicate = json.loads(self.cli('close-fast', *options))
+        self.assertTrue(duplicate['duplicate'])
+        self.assertNotIn('proposal', duplicate)
+        self.assertEqual(before, fixtures.snapshot(self.root))
+        changed = json.loads(self.cli('close-fast', *options, '--pending','Otro pendiente'))
+        self.assertFalse(changed['duplicate'])
+
+    def test_fast_close_git_is_read_only_and_optional(self):
+        import memory
+        from types import SimpleNamespace
+        args = SimpleNamespace(id=None, date='2026-10-15', classification='confirmado',
+                               status='pendiente', evidence=[])
+        data = __import__('workflow').event_base(args)
+        data.update(module='general', done='Fixture', pending='', tests='', files='',
+                    tests_status='desconocidas', decisions=[], conflicts=[])
+        before = fixtures.snapshot(self.root)
+        with patch('memory.git_read', side_effect=['a'*40, '', '', None]) as git:
+            result = memory.prepare_fast_close(self.store(), data)
+        self.assertEqual([call.args[1:] for call in git.call_args_list], [
+            ('rev-parse','--verify','HEAD'),
+            ('status','--short','--branch','--untracked-files=normal'),
+            ('diff','--check'), ('diff','--cached','--check')])
+        self.assertTrue(result['git']['status']['verified'])
+        self.assertFalse(result['git']['cached_diff_check']['verified'])
+        with patch('memory.git_read', return_value=None):
+            result = memory.prepare_fast_close(self.store(), data)
+        self.assertFalse(result['git']['head']['verified'])
+        self.assertEqual(before, fixtures.snapshot(self.root))
+
+    def test_fast_close_rejects_partial_duplicate_scan(self):
+        self.put('docs/memory/sessions/broken.json', '{invalid')
+        import memory
+        data = dict(schema_version=2,id='fast',date='2026-10-15',
+            created_at='2026-10-15T12:00:00-03:00',classification='confirmado',
+            status='pendiente',evidence=[],module='general',done='Fixture',
+            pending='',tests='',files='',tests_status='desconocidas',decisions=[],conflicts=[])
+        with self.assertRaises(ValueError):
+            memory.prepare_fast_close(self.store(), data)
+
+    def fast_data(self, ident=None, **changes):
+        import workflow
+        from types import SimpleNamespace
+        data = workflow.event_base(SimpleNamespace(id=ident, date='2026-10-15', classification='confirmado',
+                                                   status='pendiente', evidence=[]))
+        data.update(module='general', done='Fixture', pending='', tests='', files='',
+                    tests_status='desconocidas', decisions=[], conflicts=[])
+        data.update(changes)
+        return data
+
+    def test_fast_close_git_summary_is_bounded_and_detail_is_optional(self):
+        import memory
+        NL = chr(10)
+        status = NL.join(['## main...origin/main [ahead 1]'] + [' M src/f%02d.cs' % i for i in range(30)]
+                         + ['?? nuevo.txt', 'M  indexado.cs'])
+        data = self.fast_data()
+        with patch('memory.git_read', side_effect=['a'*40, status, '', '']):
+            summary = memory.prepare_fast_close(self.store(), data)['git']['status']
+        self.assertTrue(summary['verified'])
+        self.assertEqual('main...origin/main [ahead 1]', summary['branch'])
+        self.assertEqual((32, 31, 1, 1), (summary['total'], summary['tracked_changes'], summary['untracked'], summary['staged']))
+        self.assertEqual(20, len(summary['paths']))
+        self.assertTrue(summary['truncated'])
+        self.assertNotIn('output', summary)
+        with patch('memory.git_read', side_effect=['a'*40, status, '', '']):
+            detailed = memory.prepare_fast_close(self.store(), data, detail=True)['git']['status']
+        self.assertEqual(20, len(detailed['paths']))
+        self.assertEqual(status, detailed['output'])
+        short = NL.join(['## main', ' M uno.cs'])
+        with patch('memory.git_read', side_effect=['a'*40, short, '', '']):
+            small = memory.prepare_fast_close(self.store(), data)['git']['status']
+        self.assertFalse(small['truncated']); self.assertEqual([' M uno.cs'], small['paths'])
+
+    def test_fast_close_cli_accepts_git_detail_without_writing(self):
+        self.seed()
+        before = fixtures.snapshot(self.root)
+        envelope = json.loads(self.cli('close-fast','--date','2026-10-15','--done','Avance','--git-detail'))
+        self.assertEqual(before, fixtures.snapshot(self.root))
+        self.assertIn('git', envelope); self.assertFalse(envelope['tests_executed'])
+
+    def test_fast_close_diff_check_reports_real_findings_and_git_errors(self):
+        import memory
+        NL = chr(10)
+        data = self.fast_data()
+        findings = NL.join(['src/a.cs:3: trailing whitespace.', '+var x = 1; '])
+        with patch('memory.git_read', side_effect=['a'*40, '', findings, '']) as git:
+            git_info = memory.prepare_fast_close(self.store(), data)['git']
+        worktree, cached = git_info['diff_check'], git_info['cached_diff_check']
+        self.assertTrue(worktree['verified']); self.assertFalse(worktree['clean'])
+        self.assertEqual(findings.splitlines(), worktree['findings'])
+        self.assertTrue(cached['verified']); self.assertTrue(cached['clean']); self.assertEqual([], cached['findings'])
+        # Solo diff --check acepta el codigo de salida 2; los demas comandos no.
+        accepted = {call.args[1:][0]: call.kwargs.get('accept') for call in git.call_args_list}
+        self.assertEqual((0, 2), accepted['diff']); self.assertEqual((0,), accepted['status'])
+        with patch('memory.git_read', return_value=None):
+            failed = memory.prepare_fast_close(self.store(), data)['git']
+        self.assertTrue(all(item == {'verified': False} for item in failed.values()))
+
+    def test_git_read_accept_only_listed_exit_codes(self):
+        from types import SimpleNamespace
+        def run(code):
+            return patch('audit.subprocess.run', return_value=SimpleNamespace(returncode=code, stdout='x.cs:1: trailing whitespace.' + chr(10)))
+        with run(2):
+            self.assertIsNone(audit.git_read(self.root, 'diff', '--check'))
+            self.assertEqual('x.cs:1: trailing whitespace.', audit.git_read(self.root, 'diff', '--check', accept=(0, 2)))
+        with run(128):
+            self.assertIsNone(audit.git_read(self.root, 'diff', '--check', accept=(0, 2)))
+
+    def test_fast_close_same_id_is_idempotent_or_rejected(self):
+        import memory
+        self.seed()
+        self.commit('close', self.fast_data('cierre-x'))
+        before = fixtures.snapshot(self.root)
+        with patch('memory.git_read', return_value=None):
+            same = memory.prepare_fast_close(self.store(), self.fast_data('cierre-x'))
+            other_id = memory.prepare_fast_close(self.store(), self.fast_data('cierre-y'))
+            with self.assertRaises(ValueError):
+                memory.prepare_fast_close(self.store(), self.fast_data('cierre-x', pending='Otro pendiente'))
+        for result in (same, other_id):
+            self.assertTrue(result['duplicate']); self.assertEqual('cierre-x', result['existing_id'])
+            self.assertNotIn('proposal', result); self.assertFalse(result['tests_executed'])
+        self.assertEqual(before, fixtures.snapshot(self.root))
+
     def test_project_and_location_bound(self):
         proposal=prepare(self.store(),'initialize',{})
         proposal['proposal']['project_binding']='0'*64

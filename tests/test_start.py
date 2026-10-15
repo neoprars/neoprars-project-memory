@@ -35,7 +35,7 @@ class StartTests(unittest.TestCase):
         text = self.cli('help')
         found = re.findall(r'^(start|audit|recall|resume|summary|roadmap|decisions|handoff|close|history|help)\s',text,re.M)
         self.assertEqual(found, ORDER)
-        self.assertEqual(text.count('Ejemplo:'), 17)  # 11 canonical + six proposal commands
+        self.assertEqual(text.count('Ejemplo:'), 18)  # 11 canonical + seven proposal commands
         self.assertIn('recomendado',text)
         package=fixtures.SCRIPTS.parent
         for name in ('SKILL.md','references/HELP.md'):

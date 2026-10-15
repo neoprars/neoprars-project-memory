@@ -18,6 +18,22 @@ La huella usa JSON canónico de `proposal`, no los bytes del archivo ni del enve
 
 Cada propuesta queda ligada a proyecto, ubicación, estado de registros y fuentes usadas. Un cambio entre preparación y aplicación exige nueva propuesta y revisión. No mezclar proyectos. apply usa un bloqueo exclusivo temporal por ubicación para coordinar escritores de esta CLI. Las comprobaciones son optimistas y cooperativas; no garantizan protección ante cambios hostiles durante la escritura ni una transacción de varios archivos. Ante interrupción, inspeccionar estado y cualquier bloqueo pendiente antes de reintentar; nunca borrar un bloqueo automáticamente por fecha.
 
+## close-fast
+
+Usar las mismas opciones y el mismo formato de propuesta de `close`. Registrar avances en `--done`, pendientes en `--pending`, archivos en `--files`, resultados y límites en `--tests`, decisiones existentes con `--decision-id` y evidencias registradas con `--evidence`. Una decisión nueva se prepara mediante `add-decision`; reutilizar su ID, sin duplicarla ni inferir aprobación.
+
+Antes de cerrar, revisar solo las fuentes y cambios pertinentes. Reutilizar pruebas previas cuando sus entradas, configuración y alcance sigan vigentes: anotar comando, resultado, fecha, evidencia y revisión/huellas cubiertas en `--tests`. Comparar con los cambios actuales; Git limpio o el mismo HEAD no acreditan por sí solos cobertura. Si hay cambios relevantes posteriores, ejecutar únicamente las comprobaciones afectadas. Resultados ausentes quedan desconocidos; la CLI no ejecuta pruebas ni certifica automáticamente las declaradas.
+
+`close-fast` consulta HEAD, status y `diff --check` del árbol e índice, con tiempo acotado y sin red, y lo devuelve resumido en `git`, fuera de la propuesta persistible: rama, recuento (total, tracked, untracked, staged) y como máximo 20 rutas con `truncated`. `diff --check` informa `clean` y hasta 20 líneas de hallazgos reales (su código de salida 2 es un resultado válido, no un fallo). `--git-detail` añade `output` completo, que puede ser extenso; solo usarlo ante una duda concreta. `verified=false` significa consulta fallida o no disponible, nunca Git limpio. Sin Git se permite preparar el cierre indicando ese límite. No hace fetch, staging, commit, push ni limpieza. Cambios ajenos se conservan; no impiden un cierre local.
+
+Busca sesiones equivalentes por todos los campos del cierre salvo ID y hora de creación (incluye fecha y huellas de evidencia), antes de construir la propuesta. Si encuentra una, devuelve `duplicate=true` y `existing_id`, sin otra propuesta, también si se repite el mismo ID con el mismo contenido. Un ID ya registrado con contenido distinto se rechaza. Diferencias de orden/texto requieren revisión humana; usar un ID estable por cierre evita repetir el mismo evento al aplicar. Si la lectura es parcial, rechaza la preparación para no afirmar ausencia de duplicados.
+
+Revisar y aplicar la propuesta exacta mediante el `apply` existente, solo con autorización para ese contenido. Esto registra la sesión local sin exigir commit/push, ni modificar estado/roadmap u otros documentos. Si no hay autorización para guardar, entregar la propuesta pendiente. No repetir suites completas, auditorías, ECC o Graphify por rutina: usarlos solo para resolver una incertidumbre concreta.
+
+```powershell
+python -X utf8 -B $mem close-fast --id cierre-ejemplo --date 2026-10-15 --done 'Avance comprobado' --pending 'Validación física pendiente' --tests 'Comando, fecha, resultado y huellas vigentes; no reejecutado' --tests-status aprobadas --files 'ruta/revisada' --json
+```
+
 ## Inicialización y fuentes
 
 `initialize` propone INDEX.md, RULES.md, FORMATS.md, sources.json y registros vacíos. No inventa avances. Rechaza directorio de memoria existente.

@@ -1,4 +1,4 @@
-# Neoprars Project Memory V1.4.1 — ayuda
+# Neoprars Project Memory V1.4.2 — ayuda
 
 Python 3.10+, sin paquetes externos. Copiar el paquete a `.agents/skills/neoprars-project-memory/`; no sobrescribir una instalación existente sin revisar cambios. No modificar AGENTS.md automáticamente.
 
@@ -21,6 +21,7 @@ python -X utf8 -B $mem help
 | decisions | Decisiones y evidencia | `decisions` |
 | handoff | Transferencia Markdown/TXT a cualquier IA | `handoff --preview` |
 | close | Propuesta de cierre | `close --help` |
+| close-fast | Mismas opciones de close; resumen Git acotado y deduplicación (`--git-detail` opcional) | `close-fast --help` |
 | history | Hashes/fechas Git | `history` |
 | help | Todos los comandos | `help` |
 | add-decision | Propuesta de decisión | `add-decision --help` |

@@ -4,7 +4,7 @@ license: MIT
 description: Consultar y mantener memoria local de proyectos, preparar cierres y transferir contexto. Usar al solicitar recordar sesiones, retomar trabajo, auditar memoria, registrar decisiones o resolver conflictos de memoria.
 ---
 
-# Neoprars Project Memory — V1.4.1
+# Neoprars Project Memory — V1.4.2
 
 ## Invariantes
 
@@ -39,6 +39,7 @@ CLI: `python -X utf8 -B .agents/skills/neoprars-project-memory/scripts/memory.py
 | decisions | Decisiones declaradas y vigencia de evidencia | `decisions` |
 | handoff | Transferir contexto portable, conflictos y límites | `handoff --preview` |
 | close | Preparar cierre semiautomático | `close --date 2026-10-11 --done "Trabajo comprobado"` |
+| close-fast | Cierre local con Git, deduplicación y pruebas vigentes | `close-fast --date 2026-10-15 --done "Trabajo comprobado"` |
 | history | Últimos 20 hashes y fechas del roadmap | `history` |
 | help | Ayuda y ejemplos | `help` |
 | add-decision | Preparar decisión o sustitución | `add-decision --help` |
@@ -49,6 +50,8 @@ CLI: `python -X utf8 -B .agents/skills/neoprars-project-memory/scripts/memory.py
 | apply | Guardar propuesta exacta confirmada | `apply --help` |
 
 ## Cierre, decisiones y conflictos
+
+Para `close-fast`, seguir el [flujo rápido](references/WORKFLOWS.md#close-fast). Reutiliza la propuesta y el `apply` de `close`; no ejecuta pruebas, commit ni push. El cierre local es válido sin publicación y conserva las mismas condiciones de confirmación.
 
 Al terminar una tarea, preparar cierre con hechos comprobados, archivos, resultado de pruebas, decisiones vinculadas y pendientes. Si faltan datos necesarios, solicitarlos; pruebas sin resultado explícito quedan desconocidas. Presentar la propuesta completa, revisar posibles datos sensibles y guardar solo lo confirmado. Ver [WORKFLOWS.md](references/WORKFLOWS.md).
 

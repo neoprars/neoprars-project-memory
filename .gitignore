@@ -1,15 +1,4 @@
+# Local proposal retained for audit history; protected by ACL and excluded from release changes.
+m1-close-proposal.json
 __pycache__/
 *.py[cod]
-.venv/
-venv/
-.pytest_cache/
-.coverage
-coverage/
-.DS_Store
-Thumbs.db
-docs/memory/
-work/
-outputs/
-*.lock
-.env
-.env.*

@@ -1,4 +1,4 @@
-# Neoprars Project Memory V1.4.2 — ayuda
+# Neoprars Project Memory V1.5.0 — ayuda
 
 Python 3.10+, sin paquetes externos. Copiar el paquete a `.agents/skills/neoprars-project-memory/`; no sobrescribir una instalación existente sin revisar cambios. No modificar AGENTS.md automáticamente.
 
@@ -44,3 +44,9 @@ Pruebas: `python -X utf8 -B -m unittest discover -s .agents/skills/neoprars-proj
 V1.4: `handoff --preview` no escribe; `handoff` exporta Markdown por defecto. `--format txt` conserva TXT. Opciones: `--module`, `--sessions 10` (1 a 50), `--goal`, `--next-step`, `--technical` (anexo opcional). La salida normal muestra el documento; `--json` devuelve el envelope para automatizaciones. Ver [HANDOFF.md](HANDOFF.md).
 
 V1.4.1: estado y roadmap se citan por referencia de forma predeterminada; `--full-documents` incluye el contenido completo. Handoff conserva posiciones historicas de conflictos y alcance, criterios, dependencias y limites de pendientes. No modifica formatos persistidos.
+
+V1.5.0 (M1/M2/M3): `resume` y `handoff` consolidan decisiones vigentes, avances, pendientes, riesgos y la ultima sesion. `resume --session-limit N` y `--max-context-items N` acotan la lectura y la salida; `handoff --session-scan-limit N` limita el escaneo de sesiones. Las fuentes faltantes, JSON invalidos y referencias rotas se informan como omitidos o no verificables, nunca como confirmados. Antes de aplicar una propuesta se vuelven a verificar sus dependencias; los cambios concurrentes producen conflicto explicito. La frescura documental se clasifica como confirmada, posiblemente obsoleta o no verificable, sin reparar documentos automaticamente.
+
+M4: `sources.json` se procesa incrementalmente y conserva controles de UTF-8, estabilidad y presupuesto sin materializar innecesariamente todo el registro. La cobertura distingue lectura `limitada` por presupuesto de fuente `incompleta` o no verificable. `resume` muestra por defecto un contexto compacto; `--full-context` incluye el cuerpo de `PROJECT_STATE` y las sesiones recientes. `--project` siempre define la raíz explícita, incluso desde un repositorio Git anidado. La CLI puede invocarse desde Claude Code u otro asistente mediante Python estándar, sin integración de proveedor.
+
+M4.1: el contexto JSON predeterminado de `resume` limita cada categoría y metadatos de cobertura a 10 elementos; `--max-context-items N` permite ajustar ese límite y `--full-context` devuelve el informe completo. `PROJECT_STATE.md` se verifica con un presupuesto aislado para no consumir el presupuesto del contexto.

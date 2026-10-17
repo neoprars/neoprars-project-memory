@@ -28,6 +28,14 @@ INIT_FILES = {
     'decisions.jsonl': '', 'conflicts.jsonl': '', 'pending.jsonl': '', 'bugs.jsonl': ''}
 
 
+class ConcurrentChangeError(ValueError):
+    """A proposal no longer matches the dependencies it was prepared from."""
+
+    def __init__(self, changes):
+        self.changes = changes
+        super().__init__('Cambio concurrente en: ' + ', '.join(changes))
+
+
 def canonical(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':'), allow_nan=False).encode('utf-8')
 
@@ -198,12 +206,18 @@ def validate_relations(store, kind, data):
             raise ValueError('Resolucion requiere evidencia de la alternativa y de la eleccion.')
 
 
-def source_registry(store):
+def source_registry(store, *, allow_stream=False):
     if not store.path('sources.json').exists():
         return {'schema_version': 1, 'sources': [], 'revisions': []}
-    values = store.objects('sources.json')
-    if store.issues or len(values) != 1:
-        raise ValueError('Registro de fuentes no verificable.')
+    if allow_stream:
+        value = store.stream_sources()
+        if value is None:
+            raise ValueError('Registro de fuentes no verificable.')
+        values = [value]
+    else:
+        values = store.objects('sources.json')
+        if store.issues or len(values) != 1:
+            raise ValueError('Registro de fuentes no verificable.')
     value = values[0]
     if value.get('schema_version') != 1 or not isinstance(value.get('sources'), list) or not isinstance(value.get('revisions', []), list):
         raise ValueError('Formato de fuentes desconocido.')
@@ -213,11 +227,19 @@ def source_registry(store):
     return value
 
 
-def expected_state(store, kind, data):
-    memory = INIT_FILES if kind == 'initialize' else {'sources.json': '', 'decisions.jsonl': '', 'conflicts.jsonl': ''}
+def expected_state(store, kind, data, *, strict_evidence=True):
+    if kind == 'initialize':
+        memory = INIT_FILES
+    elif kind == 'source':
+        memory = {'sources.json': ''}
+    else:
+        # Event appenders do not overwrite unrelated records. Dependency-level
+        # snapshots below protect only referenced records, avoiding false
+        # conflicts when another actor appends an independent event.
+        memory = {}
     if kind == 'close':
         memory = {**memory, 'sessions/' + data['id'] + '.json': ''}
-    state = {'memory': {name: snapshot(store, name) for name in memory}, 'sources': {}}
+    state = {'memory': {name: snapshot(store, name) for name in memory}, 'sources': {}, 'records': {}}
     if kind == 'initialize' and any(value is not None for value in state['memory'].values()):
         raise ValueError('No reinicializar memoria existente.')
     if kind == 'initialize' and store.folder.exists():
@@ -234,8 +256,6 @@ def expected_state(store, kind, data):
         state['sources'][data['path']] = current
         source_registry(store)
     elif kind != 'initialize':
-        registry = source_registry(store)
-        by_id = {x['id']: x for x in registry['sources']}
         proofs = list(data['evidence'])
         if kind == 'conflict':
             proofs += [proof for option in data['alternatives'] for proof in option['evidence']]
@@ -243,15 +263,46 @@ def expected_state(store, kind, data):
             conflicts = existing_events(store, 'conflicts.jsonl')
             target = next(x for x in conflicts if x.get('id') == data['resolves'])
             proofs += next(x['evidence'] for x in target['alternatives'] if x['id'] == data['choice'])
+        registry = source_registry(store, allow_stream=kind in ('close', 'decision', 'conflict', 'resolution')) if proofs else None
+        by_id = {x['id']: x for x in registry['sources']} if registry else {}
+        if proofs and 'sources.json' not in state['memory']:
+            state['memory']['sources.json'] = snapshot(store, 'sources.json')
+        dependencies = {}
+        if kind == 'close':
+            dependencies.update({'decisions.jsonl': data['decisions'], 'conflicts.jsonl': data['conflicts']})
+        elif kind == 'decision' and data['supersedes']:
+            dependencies['decisions.jsonl'] = [data['supersedes']]
+        elif kind == 'resolution':
+            dependencies['conflicts.jsonl'] = [data['resolves']]
+        for filename, identifiers in dependencies.items():
+            records = {record.get('id'): digest(record)
+                       for record in existing_events(store, filename)
+                       if isinstance(record.get('id'), str)}
+            state['records'][filename] = {ident: records.get(ident) for ident in identifiers}
         for proof in proofs:
             src = by_id.get(proof['source_id'])
             if not src or str(src.get('authority', '')).startswith(('excluida','excluded')):
                 raise ValueError('Evidencia desconocida o excluida.')
             current = snapshot(store, src.get('path'), official=True)
-            if not current or current != src.get('sha256') or proof.get('sha256', current) != current:
+            if current is not None:
+                state['sources'][src['path']] = current
+            if strict_evidence and (not current or current != src.get('sha256')
+                                    or proof.get('sha256', current) != current):
                 raise ValueError('Evidencia desactualizada o no verificable.')
-            state['sources'][src['path']] = current
     return state
+
+
+def state_changes(expected, current):
+    """List changed dependency paths without exposing record contents."""
+    changes = []
+    for group in ('memory', 'sources', 'records'):
+        before = expected.get(group, {})
+        after = current.get(group, {})
+        keys = set(before) | set(after)
+        for key in sorted(keys):
+            if before.get(key) != after.get(key):
+                changes.append(group + '/' + str(key))
+    return changes
 
 
 def prepare(store, kind, data):
@@ -262,8 +313,11 @@ def prepare(store, kind, data):
     state = expected_state(store, kind, data)
     # Freeze source revisions in the event so later re-registration cannot make
     # an old decision appear verified against a new version.
-    if 'evidence' in data:
-        registry = source_registry(store)
+    has_evidence = bool(data.get('evidence')) or any(
+        proof for option in data.get('alternatives', []) if isinstance(option, dict)
+        for proof in option.get('evidence', []))
+    if has_evidence:
+        registry = source_registry(store, allow_stream=kind in ('close', 'decision', 'conflict', 'resolution'))
         sources = {x['id']: x for x in registry['sources']}
         for proof in data['evidence']:
             proof['sha256'] = sources[proof['source_id']]['sha256']
@@ -322,8 +376,9 @@ def apply_locked(store, envelope, approved_hash, approved_by, mode):
     kind, data = proposal['kind'], proposal['data']
     validate(kind, data)
     validate_relations(store, kind, data)
-    if expected_state(store, kind, data) != proposal['expected']:
-        raise ValueError('Fuentes o memoria cambiaron; preparar y revisar nueva propuesta.')
+    current = expected_state(store, kind, data, strict_evidence=False)
+    if current != proposal['expected']:
+        raise ConcurrentChangeError(state_changes(proposal['expected'], current) or ['dependencias no identificables'])
     approval = {'proposal_sha256': approved_hash, 'confirmed_by': approved_by,
         'confirmed_at': dt.datetime.now().astimezone().isoformat(), 'mode': 'supervised'}
     if kind == 'initialize':

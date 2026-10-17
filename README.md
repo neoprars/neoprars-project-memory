@@ -2,7 +2,7 @@
 
 Memoria local de proyectos y transferencia de contexto para asistentes de IA.
 
-**Estado: beta.** Version del codigo: 1.4.2. Python 3.10 o posterior; sin paquetes externos. Compatible con flujos Codex, con handoff portable para cualquier asistente que pueda leer Markdown. La primera prueba de comprension se realizo con Copilot; no se afirma validacion con otros proveedores.
+**Estado: beta.** Version del codigo: 1.5.0. Python 3.10 o posterior; sin paquetes externos. Compatible con flujos Codex y Claude Code mediante CLI y handoff portable para cualquier asistente que pueda leer Markdown. La compatibilidad es por contrato de archivos y comandos, sin depender de AGENTS.md, ECC ni Graphify.
 
 ## Capacidades
 
@@ -12,6 +12,9 @@ Memoria local de proyectos y transferencia de contexto para asistentes de IA.
 - Resolver conflictos mediante nuevos eventos, preservando alternativas y antecedentes.
 - Exportar handoff compacto con motivos, posiciones historicas, criterios de aceptacion, pruebas declaradas y fuentes.
 - Funcionar sin ECC ni Graphify. Git es opcional, salvo consultas de historial.
+- Reanudar con contexto consolidado, carga selectiva y limites configurables (M1/M2).
+- Detectar cambios concurrentes y frescura documental sin sobrescrituras silenciosas (M3).
+- Integrar fuentes grandes con lectura incremental, cobertura diferenciada y salida UTF-8 portable (M4).
 
 ## Instalacion
 

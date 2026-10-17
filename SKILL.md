@@ -4,7 +4,7 @@ license: MIT
 description: Consultar y mantener memoria local de proyectos, preparar cierres y transferir contexto. Usar al solicitar recordar sesiones, retomar trabajo, auditar memoria, registrar decisiones o resolver conflictos de memoria.
 ---
 
-# Neoprars Project Memory — V1.4.2
+# Neoprars Project Memory — V1.5.0
 
 ## Invariantes
 
@@ -25,6 +25,19 @@ Usar `$neoprars-project-memory start` como entrada recomendada. Leer [START.md](
 
 CLI: `python -X utf8 -B .agents/skills/neoprars-project-memory/scripts/memory.py start`.
 `--project RUTA` antes del comando; `--memory-root RUTA` y presupuestos después. Sin Git, indicar `--project` para compartir alcance desde subdirectorios.
+
+## Contrato operativo para Codex y Claude Code
+
+Al invocar esta skill, el agente debe ejecutar la CLI mediante su herramienta de shell disponible y devolver el resultado relevante. Cargar `SKILL.md` solo incorpora instrucciones; no ejecuta Python por sí mismo. No prometer ejecución automática del proveedor ni pedir al usuario que ejecute `memory.py` cuando el agente sí dispone de shell.
+
+1. Determinar la carpeta que contiene el `SKILL.md` cargado (`SKILL_ROOT`). Usar el `scripts/memory.py` de esa misma instalación; no copiarlo, duplicarlo ni asumir que vive en `.agents` o `.claude`.
+2. Determinar la raíz del proyecto a partir del contexto de trabajo. Pasarla siempre explícitamente con `--project`, especialmente si el agente está en un repositorio Git anidado.
+3. Ejecutar primero, en modo lectura, `python -X utf8 -B "SKILL_ROOT/scripts/memory.py" --project "PROJECT_ROOT" start --json`. En Windows usar `python`; en Unix, `python3` si `python` no apunta a Python 3.10+.
+4. Para reanudar, ejecutar `resume --json` con la misma raíz y memoria. La salida predeterminada es compacta; usar `--full-context` solo cuando el usuario o la tarea necesite el cuerpo completo de `PROJECT_STATE.md` y las sesiones recientes. `--max-context-items N` ajusta los límites.
+5. Interpretar `context.state.coverage` como la cobertura e integridad de `PROJECT_STATE.md`, y `context.partial_reasons` y `consolidated_context.coverage.partial_reasons` como motivos explícitos de contexto parcial. Nunca presentar datos omitidos, no verificables o posiblemente obsoletos como confirmados.
+6. Ejecutar del mismo modo `audit`, `handoff`, consultas y comandos de preparación. Los comandos de escritura solo se ejecutan después de la autorización y confirmación exigidas por los formatos; `apply` debe recibir la propuesta y huella exactas.
+
+Si el proveedor no ofrece una herramienta para ejecutar procesos, la skill puede cargarse y describirse, pero la ejecución no se realizó: informarlo claramente y no simular resultados. La integración no depende de Codex, Claude Code, `AGENTS.md`, ECC ni Graphify.
 
 ## Comandos
 

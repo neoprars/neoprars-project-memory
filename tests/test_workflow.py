@@ -240,14 +240,30 @@ class WorkflowTests(unittest.TestCase):
             apply(self.store(),proposal,proposal['approval_sha256'],'fixture-user','supervised')
         self.assertEqual(before,fixtures.snapshot(self.root))
 
-    def test_changed_memory_rejects_proposal(self):
+    def test_independent_memory_append_does_not_block_proposal(self):
         self.seed()
         proposal=prepare(self.store(),'decision',self.decision())
         self.commit('decision',self.decision('other'))
         before=fixtures.snapshot(self.root)
-        with self.assertRaises(ValueError):
+        result=apply(self.store(),proposal,proposal['approval_sha256'],'fixture-user','supervised')
+        self.assertTrue(result['saved'])
+        self.assertNotEqual(before,fixtures.snapshot(self.root))
+        records=[json.loads(line) for line in (self.root/'docs/memory/decisions.jsonl').read_text(encoding='utf-8').splitlines()]
+        self.assertEqual({record['id'] for record in records}, {'other','d1'})
+
+    def test_changed_referenced_record_rejects_proposal_with_dependency(self):
+        self.seed()
+        self.commit('decision',self.decision())
+        proposal_data=self.decision('d2')
+        proposal_data['supersedes']='d1'
+        proposal=prepare(self.store(),'decision',proposal_data)
+        path=self.root/'docs/memory/decisions.jsonl'
+        records=[json.loads(line) for line in path.read_text(encoding='utf-8').splitlines()]
+        records[0]['detail']='changed concurrently'
+        path.write_text(''.join(json.dumps(record)+'\n' for record in records),encoding='utf-8')
+        with self.assertRaises(ValueError) as error:
             apply(self.store(),proposal,proposal['approval_sha256'],'fixture-user','supervised')
-        self.assertEqual(before,fixtures.snapshot(self.root))
+        self.assertIn('records/decisions.jsonl',str(error.exception))
 
     def test_supersession_preserves_original_bytes(self):
         self.seed()

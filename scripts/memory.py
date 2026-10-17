@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
-"""Neoprars Project Memory V1.4.2 — local stdlib CLI."""
+"""Neoprars Project Memory V1.5.0 — local stdlib CLI."""
 import sys
 sys.dont_write_bytecode = True
+if hasattr(sys.stdout, 'reconfigure'):
+    # Claude Code and shell integrations may invoke the script without
+    # Python's -X utf8 switch. Keep CLI output portable on Windows.
+    sys.stdout.reconfigure(encoding='utf-8', errors='strict')
+    sys.stderr.reconfigure(encoding='utf-8', errors='strict')
 import argparse
 import copy
 import datetime as dt
@@ -10,10 +15,11 @@ import math
 import re
 import time
 from audit import audit_project, git_read, render, EXCLUDED, SENSITIVE
-from start import start_project, render_start
+from start import start_project, render_start, Budget
 from store import Store, READ_DEFAULTS, scrub
 from safety import safe_path
 from workflow import prepare, apply, event_base, snapshot, source_registry
+from context import consolidate
 
 ROADMAP_NAMES = ('ROADMAP.md','ROADMAP.txt','roadmap.md','roadmap.txt')
 STATE_NAMES = ('PROJECT_STATE.md','PROJECT_STATE.txt')
@@ -63,15 +69,36 @@ def session_text(items):
     return scrub('\n'.join(lines))
 
 
-def official(store, explicit, names):
+def official(store, explicit, names, *, isolated=False):
     if explicit:
+        path = safe_path(store.root, explicit, store.exclusions, SENSITIVE, store.limits['max_depth'])
+        if isolated and path and path.is_file():
+            text, coverage = _read_isolated_document(store, path)
+            return text, explicit, coverage
+        if isolated:
+            return None, explicit, {'status': 'omitida', 'coverage_class': 'incompleta',
+                                    'integrity': 'no verificable', 'budget_scope': 'documento oficial aislado'}
         return store.read(explicit,official=True),explicit
     for name in names:
         path=safe_path(store.root,name,store.exclusions,SENSITIVE,store.limits['max_depth'])
         if path and path.is_file():
+            if isolated:
+                text, coverage = _read_isolated_document(store, path)
+                return text, name, coverage
             return store.read(name,official=True),name
     store.issues.append('Fuente desconocida; indicar ruta explicita.')
-    return None,None
+    return (None,None,None) if isolated else (None,None)
+
+
+def _read_isolated_document(store, path):
+    """Verify an official document without consuming the context budget."""
+    size = path.stat().st_size
+    budget = Budget(max(store.limits['max_bytes'], size), 1,
+                   max(store.limits['max_document_bytes'], size),
+                   store.limits['chunk_size'], store.deadline)
+    text, coverage = budget.read(path)
+    coverage['budget_scope'] = 'documento oficial aislado'
+    return text, coverage
 
 
 def roadmap_text(store,args):
@@ -91,6 +118,25 @@ GIT_LIST_LIMIT = 20
 def _git_lines(value, limit=GIT_LIST_LIMIT):
     lines = [scrub(line) for line in value.splitlines()] if value else []
     return lines[:limit], len(lines), len(lines) > limit
+
+
+def compact_resume_context(context, limit):
+    """Keep JSON resume metadata bounded without changing the source report."""
+    result = copy.deepcopy(context)
+    for key in ('sources', 'references', 'decisions', 'conflicts', 'pending', 'issues', 'limitations'):
+        values = result.get(key)
+        if isinstance(values, list) and len(values) > limit:
+            result[key] = values[:limit]
+            result.setdefault('compact_omitted', {})[key] = len(values) - limit
+    coverage = result.get('coverage')
+    if isinstance(coverage, dict) and isinstance(coverage.get('files'), list):
+        files = coverage['files']
+        if len(files) > limit:
+            coverage['files'] = files[:limit]
+            result.setdefault('compact_omitted', {})['coverage.files'] = len(files) - limit
+    result['compact_default'] = True
+    result['compact_limit'] = limit
+    return result
 
 
 def summarize_git(name, value, detail=False):
@@ -156,7 +202,7 @@ def prepare_fast_close(store, data, detail=False):
 
 
 def main():
-    parser=argparse.ArgumentParser(description='Neoprars Project Memory V1.4.2; start es el punto de entrada recomendado')
+    parser=argparse.ArgumentParser(description='Neoprars Project Memory V1.5.0; start es el punto de entrada recomendado')
     parser.add_argument('--project')
     sub=parser.add_subparsers(dest='cmd',required=True)
     parsers={name:sub.add_parser(name,help=description,description=description,epilog='Ejemplo: '+example)
@@ -176,6 +222,13 @@ def main():
             p.add_argument('--export',action='store_true')
     for name in ('resume','handoff'):
         parsers[name].add_argument('--state-path')
+    parsers['resume'].add_argument('--session-limit', type=int, default=3,
+                                   help='Cantidad maxima de sesiones recientes a cargar')
+    parsers['resume'].add_argument('--full-context', action='store_true',
+                                   help='Incluir el cuerpo completo de PROJECT_STATE y las sesiones recientes')
+    for name in ('resume','handoff'):
+        parsers[name].add_argument('--max-context-items', type=int, default=10,
+                                   help='Cantidad maxima de elementos por bloque consolidado')
     for name in ('roadmap','handoff','history'):
         parsers[name].add_argument('--roadmap-path')
     p=parsers['handoff']
@@ -183,6 +236,8 @@ def main():
     p.add_argument('--format',choices=('markdown','txt'),default='markdown')
     p.add_argument('--module',help='Modulo exacto de sesiones/eventos; conservar contexto compartido')
     p.add_argument('--sessions',type=int,default=10,help='Ultimas 1 a 50 sesiones seleccionadas')
+    p.add_argument('--session-scan-limit',type=int,default=50,
+                   help='Maximo de sesiones candidatas a cargar antes del filtro de modulo')
     p.add_argument('--goal',help='Objetivo aportado por el usuario; no inferirlo')
     p.add_argument('--next-step',help='Siguiente paso propuesto; no equivale a autorizacion')
     p.add_argument('--technical',action='store_true',help='Incluir anexo tecnico de contexto')
@@ -236,7 +291,7 @@ def main():
                   (render_start(report) if args.cmd=='start' else render(report)))
             return
         if args.cmd=='help':
-            print('NEOPRARS PROJECT MEMORY V1.4.2 — start: punto de entrada recomendado')
+            print('NEOPRARS PROJECT MEMORY V1.5.0 — start: punto de entrada recomendado')
             for name,description,example in COMMANDS+EXTRA:
                 print(f'{name:<10} {description}\n           Ejemplo: {example}')
             print('Solo lectura: start, audit y propuestas. Escritura: apply supervised y exportaciones solicitadas.\n'
@@ -299,20 +354,39 @@ def query(store,args,limits):
         if context.get('partial'):
             store.issues.append('Contexto de memoria parcial; revisar vigencia.')
     if args.cmd in ('recall','summary','resume'):
-        items=store.sessions()
+        items=store.sessions(limit=args.session_limit) if args.cmd == 'resume' else store.sessions()
         if args.cmd in ('recall','summary'):
             since,until=args.date or args.since,args.date or args.until
             items=[x for x in items if (not since or str(x.get('date',''))>=since)
                    and (not until or str(x.get('date',''))<=until)
                    and (not args.module or args.module.casefold() in json.dumps(x,ensure_ascii=False).casefold())]
         else:
-            items=items[-3:] if args.cmd=='resume' else items[-10:]
+            items=items if args.cmd=='resume' else items[-10:]
         output=session_text(items)
         if args.cmd=='summary' and args.export:
             export='SESSION_SUMMARY'
     if args.cmd=='resume':
-        state,source=official(store,args.state_path,STATE_NAMES)
-        output='ESTADO (fuente candidata: '+str(source)+')\n'+scrub(state or 'Fuente desconocida.')+'\n\nULTIMAS SESIONES\n'+output
+        state,source,state_coverage=official(store,args.state_path,STATE_NAMES,isolated=True)
+        context['state'] = {'path': source or 'desconocida',
+                            'status': 'presente' if state is not None else 'no verificable',
+                            'coverage': state_coverage or {'status': 'omitida',
+                                                            'coverage_class': 'incompleta',
+                                                            'integrity': 'no verificable'}}
+        consolidated=consolidate({**context,
+                                  'partial': context.get('partial') or bool(store.omitted),
+                                  'issues': context.get('issues', []) + store.issues,
+                                  'omitted': store.omitted}, items,
+                                 max_items=args.max_context_items)
+        if args.full_context:
+            state_output = scrub(state or 'Fuente desconocida.')
+            sessions_output = '\n\nULTIMAS SESIONES\n' + output
+        else:
+            state_output = 'Fuente candidata: {} (cobertura: {})'.format(
+                source or 'desconocida', context['state']['coverage'].get('coverage_class', 'no verificable'))
+            sessions_output = ''
+        output=('ESTADO\n'+state_output+
+                '\n\nCONTEXTO CONSOLIDADO\n'+scrub(json.dumps(consolidated, ensure_ascii=False, indent=2))+
+                sessions_output)
     if args.cmd=='roadmap':
         output+='\nROADMAP\n'+roadmap_text(store,args)
         export='ROADMAP_'+args.mode.upper()
@@ -323,7 +397,10 @@ def query(store,args,limits):
         output=history or 'No se pudo consultar historial Git acotado.'
     result={'command':args.cmd,'output':output,'coverage':store.coverage(),'read_only':export is None}
     if context is not None:
-        result['context']=context
+        result['context'] = (context if args.cmd != 'resume' or args.full_context
+                             else compact_resume_context(context, args.max_context_items))
+        if args.cmd == 'resume':
+            result['consolidated_context']=consolidated
     if export:
         contents=output+'\n\nCONTEXTO Y LIMITES\n'+json.dumps({'context':context,'coverage':store.coverage()},ensure_ascii=False,indent=2)
         name='exports/'+export+'_'+dt.datetime.now().strftime('%Y%m%d_%H%M%S_%f')+'.txt'

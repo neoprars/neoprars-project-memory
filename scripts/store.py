@@ -30,6 +30,7 @@ class Store:
         self.budget = Budget(self.limits['max_bytes'], self.limits['max_documents'],
             self.limits['max_document_bytes'], self.limits['chunk_size'], self.deadline)
         self.issues = []
+        self.omitted = []
         self.entries = 0
 
     def path(self, name, *, export=False):
@@ -47,6 +48,7 @@ class Store:
                 max_depth=self.limits['max_depth']) if official else self.path(name)
             if not path.is_file():
                 self.issues.append('Fuente ausente: ' + safe_label(name))
+                self.omitted.append({'path': safe_label(name), 'reason': 'ausente'})
                 return None
             text, coverage = self.budget.read(path)
             coverage['path'] = safe_label(path.relative_to(self.root).as_posix())
@@ -78,9 +80,22 @@ class Store:
                 out.append(obj)
             except (ValueError, RecursionError):
                 self.issues.append('Registro invalido: ' + safe_label(name) + ':' + str(number))
+                self.omitted.append({'path': safe_label(name), 'record': number, 'reason': 'JSON invalido'})
         return out
 
-    def sessions(self):
+    def stream_sources(self):
+        """Read the source registry incrementally for read-only validation."""
+        path = self.path('sources.json')
+        if not path.is_file():
+            self.issues.append('Registro de fuentes ausente.')
+            return None
+        registry, coverage = self.budget.stream_sources(path)
+        if coverage.get('status') != 'completa':
+            self.issues.append('Registro de fuentes no verificable por cobertura.')
+            return None
+        return registry
+
+    def sessions(self, limit=None):
         names = []
         try:
             folder = self.path('sessions')
@@ -93,9 +108,23 @@ class Store:
                         break
                     self.entries += 1
                     if entry.name.endswith('.json'):
-                        names.append(entry.name)
+                        try:
+                            names.append((entry.name, entry.stat().st_mtime_ns))
+                        except OSError:
+                            self.omitted.append({'path': 'sessions/' + safe_label(entry.name),
+                                                 'reason': 'metadatos inaccesibles'})
             records = []
-            for name in sorted(names):
+            names.sort(key=lambda item: (item[1], item[0]), reverse=True)
+            if limit is not None:
+                if limit < 1:
+                    raise ValueError('Limite de sesiones invalido.')
+                omitted = max(0, len(names) - limit)
+                if omitted:
+                    self.omitted.append({'path': 'sessions/', 'reason': 'historial omitido',
+                                         'count': omitted, 'limit': limit})
+                    self.issues.append('Historial de sesiones recortado; la vigencia de sesiones omitidas es desconocida.')
+                names = names[:limit]
+            for name, _ in names:
                 records.extend(self.objects('sessions/' + name))
             return sorted(records, key=lambda x: str(x.get('date', '')))
         except (OSError, ValueError):
@@ -105,7 +134,8 @@ class Store:
     def coverage(self):
         return {'partial': bool(self.issues), 'issues': self.issues,
             'bytes_read': self.budget.spent, 'documents_read': self.budget.opened,
-            'entries_checked': self.entries, 'files': self.budget.coverage}
+            'entries_checked': self.entries, 'files': self.budget.coverage,
+            'omitted': self.omitted}
 
     def mkdir_for(self, name, *, export=False):
         path = self.path(name, export=export)

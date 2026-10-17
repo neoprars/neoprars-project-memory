@@ -75,7 +75,16 @@ def git_read(root, *args, timeout=5, accept=(0,)):
 
 
 def discover_root(project=None, *, deadline=None):
-    requested = Path(project or Path.cwd()).absolute()
+    # An explicit --project is authoritative, even when the invocation lives
+    # inside a nested Git repository (for example the skill checkout itself).
+    # Do not ask Git to replace that scope with an enclosing worktree.
+    if project is not None:
+        requested = Path(project).expanduser()
+        if not requested.is_absolute():
+            requested = Path.cwd() / requested
+    else:
+        requested = Path.cwd()
+    requested = requested.absolute()
     # Reject linked components before resolve hides them.
     for component in (requested, *requested.parents):
         if is_link(component):
@@ -83,8 +92,8 @@ def discover_root(project=None, *, deadline=None):
     start = requested.resolve()
     if not start.is_dir():
         raise ValueError('invalid root')
-    if project:
-        return start, 'confirmado: raíz explícita'
+    if project is not None:
+        return start, 'confirmado: raíz explícita (--project)'
     # Git metadata discovery does not execute repository scripts or inspect credentials.
     remaining = 5 if deadline is None else min(5, deadline - time.monotonic())
     found = git_read(start, 'rev-parse', '--show-toplevel', timeout=remaining) if remaining > 0 else None

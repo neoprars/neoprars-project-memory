@@ -1,4 +1,4 @@
-# Handoff portable — V1.4.1
+# Handoff portable — V1.5.0
 
 ## Propósito
 

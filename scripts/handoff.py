@@ -6,6 +6,7 @@ from collections import defaultdict, deque
 
 from start import start_project
 from store import scrub
+from context import consolidate, overview
 
 
 def value(item, name, default='No registrado.'):
@@ -113,7 +114,11 @@ def transfer(store, args, limits, read_official):
     decisions = store.objects('decisions.jsonl', jsonl=True)
     conflicts = store.objects('conflicts.jsonl', jsonl=True)
     pending = store.objects('pending.jsonl', jsonl=True)
-    recovered_sessions = [x for x in store.sessions() if related(x, args.module, session=True)]
+    scan_limit = args.sessions if not args.module else max(args.sessions, getattr(args, 'session_scan_limit', 50))
+    if scan_limit < 1 or scan_limit > 1000:
+        raise ValueError('Limite de sesiones candidatas invalido.')
+    recovered_sessions = [x for x in store.sessions(limit=scan_limit)
+                          if related(x, args.module, session=True)]
     recovered_sessions.sort(key=lambda x: (value(x,'date',''), value(x,'created_at','')))
     sessions = recovered_sessions[-args.sessions:]
     state, state_path = read_official(store, args.state_path, ('PROJECT_STATE.md','PROJECT_STATE.txt'))
@@ -159,6 +164,13 @@ def transfer(store, args, limits, read_official):
             queue.append(target)
     for source, destination in ((decisions, selected_decisions),(conflicts, selected_conflicts)):
         destination.extend(x for x in source if isinstance(x.get('id'), str) and x['id'] in references and x not in destination)
+    consolidated = consolidate({**context, 'decisions': selected_decisions,
+                                'conflicts': selected_conflicts,
+                                'pending': [x for x in pending if related(x, args.module)],
+                                'partial': context.get('partial') or bool(store.omitted),
+                                'issues': context.get('issues', []) + store.issues,
+                                'omitted': store.omitted}, sessions,
+                               max_items=getattr(args, 'max_context_items', 100))
     # Legacy events without IDs keep unknown validity; do not match on title.
     # Duplicate IDs are explicitly non-verifiable in start.
     by_id = {name: {x['id']: x for x in context.get(name, []) if isinstance(x.get('id'), str)}
@@ -181,6 +193,8 @@ def transfer(store, args, limits, read_official):
         '## Trabajo registrado en las sesiones seleccionadas\n\n' + ('\n\n'.join(quoted('Fecha: ' + value(x,'date','desconocida') +
             '\nModulo: ' + value(x,'module','no indicado') + '\nRealizado: ' + value(x,'done') +
             '\nArchivos: ' + value(x,'files')) for x in sessions) or 'Sin sesiones recuperadas; no implica ausencia de trabajo.')]
+    sections.append('## Contexto consolidado\n\n' + quoted(overview(consolidated)) +
+                    '\n\nLa síntesis estructurada completa está disponible en la salida JSON; los detalles se conservan en las secciones siguientes.')
     blocks = []
     for item in selected_decisions:
         metadata = by_id['decisions'].get(item.get('id')) if isinstance(item.get('id'), str) else None
@@ -223,7 +237,8 @@ def transfer(store, args, limits, read_official):
         output = '\n'.join(line.lstrip('#').strip() if line.startswith('#') else line[2:] if line.startswith('> ') else line
                            for line in output.splitlines()) + '\n'
     result = {'command':'handoff','output':output,'coverage':coverage,'read_only':args.preview,
-              'context':context,'format':args.format,'selected_sessions':len(sessions)}
+              'context':context,'consolidated_context':consolidated,'format':args.format,
+              'selected_sessions':len(sessions)}
     if not args.preview:
         extension = 'md' if args.format == 'markdown' else 'txt'
         name = 'exports/AI_HANDOFF_' + dt.datetime.now().strftime('%Y%m%d_%H%M%S_%f') + '.' + extension

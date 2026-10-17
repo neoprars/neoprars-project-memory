@@ -53,7 +53,7 @@ class MemoryTests(unittest.TestCase):
 
     def test_help_keeps_commands(self):
         text = self.cli('help')
-        self.assertIn('V1.4', text)
+        self.assertIn('V1.5.0', text)
         for cmd in ('audit', 'recall', 'summary', 'handoff', 'decisions', 'resume',
                     'close', 'roadmap', 'history', 'add-decision'):
             self.assertIn(cmd, text)
@@ -72,7 +72,8 @@ class MemoryTests(unittest.TestCase):
         self.confirm(self.cli('add-decision', '--date', '2026-10-09', '--title', 'fixture decision',
                  '--reason', 'fixture reason', '--detail', 'fixture detail'))
         self.assertIn('fixture decision', self.cli('decisions'))
-        self.assertIn('Trabajo verificado', self.cli('resume'))
+        self.assertNotIn('Trabajo verificado', self.cli('resume'))
+        self.assertIn('Trabajo verificado', self.cli('resume', '--full-context'))
         self.cli('handoff')
         self.cli('roadmap', '--mode', 'pending')
         self.cli('roadmap', '--mode', 'full')
@@ -95,13 +96,17 @@ class MemoryTests(unittest.TestCase):
     def test_audit_no_writes_api_and_cli(self):
         self.put('notes.md', '# Estado\nNo writes')
         before = snapshot(self.root)
+        cache_before = {str(path): (path.stat().st_mtime_ns, path.stat().st_size)
+                        for path in SCRIPTS.glob('__pycache__/*') if path.is_file()}
         with patch.object(Path, 'mkdir', side_effect=AssertionError('mkdir forbidden')):
             report = audit.audit_project(self.root)
         self.assertTrue(report['read_only'])
         self.cli('audit', '--json')
         self.assertEqual(before, snapshot(self.root))
         self.assertFalse((self.root / 'docs/memory').exists())
-        self.assertFalse(list(SCRIPTS.glob('__pycache__')))
+        cache_after = {str(path): (path.stat().st_mtime_ns, path.stat().st_size)
+                       for path in SCRIPTS.glob('__pycache__/*') if path.is_file()}
+        self.assertEqual(cache_before, cache_after)
 
     def test_excluded_files_never_opened_and_no_content_output(self):
         forbidden = [self.put(name, 'SYNTHETIC_SECRET_SENTINEL') for name in (

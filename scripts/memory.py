@@ -21,6 +21,7 @@ from safety import safe_path
 from workflow import prepare, apply, event_base, snapshot, source_registry
 from context import consolidate
 from rules import RULES_FILE, check_task, empty_document, load_text, operation, public, render_preflight
+from cleanup import execute as execute_cleanup, scan as scan_cleanup
 
 ROADMAP_NAMES = ('ROADMAP.md','ROADMAP.txt','roadmap.md','roadmap.txt')
 STATE_NAMES = ('PROJECT_STATE.md','PROJECT_STATE.txt')
@@ -38,6 +39,7 @@ COMMANDS = (
     ('rules','Listar y preparar cambios de reglas del proyecto','rules list'),
     ('preflight','Verificar reglas y decisiones antes de una tarea','preflight --task "Objetivo"'),
     ('check-task','Alias de preflight para verificar una tarea','check-task --task "Objetivo"'),
+    ('cleanup-day','Previsualizar o ejecutar limpieza segura de artefactos','cleanup-day'),
     ('help','Mostrar comandos y ejemplos','help'),
 )
 EXTRA = (
@@ -242,6 +244,12 @@ def main():
     for name in ('preflight', 'check-task'):
         parsers[name].add_argument('--task', required=True, help='Objetivo o tarea que se va a iniciar')
         parsers[name].add_argument('--scope', action='append', default=[], help='Ruta o limite declarado; se puede repetir')
+    parsers['cleanup-day'].add_argument('--execute', action='store_true', help='Ejecutar tras confirmacion explicita')
+    parsers['cleanup-day'].add_argument('--confirm-cleanup', action='store_true', help='Confirmacion explicita de borrado')
+    parsers['cleanup-day'].add_argument('--approved-by', help='Identificador de quien autoriza la limpieza')
+    parsers['cleanup-day'].add_argument('--plan-sha256', help='Huella de la vista previa revisada')
+    parsers['cleanup-day'].add_argument('--max-items', type=int, default=500)
+    parsers['cleanup-day'].add_argument('--no-external', action='store_true', help='No inspeccionar temporales externos')
     p=parsers['handoff']
     p.add_argument('--preview',action='store_true',help='Mostrar transferencia sin crear archivos')
     p.add_argument('--format',choices=('markdown','txt'),default='markdown')
@@ -306,11 +314,20 @@ def main():
                   (render_start(report) if args.cmd=='start' else
                    render_preflight(report) if args.cmd in ('preflight', 'check-task') else render(report)))
             return
+        if args.cmd == 'cleanup-day':
+            report = (execute_cleanup(args.project, include_external=not args.no_external,
+                                      max_items=args.max_items, plan_sha256=args.plan_sha256,
+                                      approved_by=args.approved_by, confirm_cleanup=args.confirm_cleanup)
+                      if args.execute else
+                      scan_cleanup(args.project, include_external=not args.no_external,
+                                   max_items=args.max_items))
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return
         if args.cmd=='help':
             print('NEOPRARS PROJECT MEMORY V1.5.0 — start: punto de entrada recomendado')
             for name,description,example in COMMANDS+EXTRA:
                 print(f'{name:<10} {description}\n           Ejemplo: {example}')
-            print('Solo lectura: start, audit y propuestas. Escritura: apply supervised y exportaciones solicitadas.\n'
+            print('Solo lectura: start, audit, preflight, cleanup-day sin --execute y propuestas. Escritura: apply supervised, cleanup-day autorizado y exportaciones solicitadas.\n'
                   '--project antes del comando; --memory-root y presupuestos despues.')
             return
         store=Store(args.project,args.memory_root,exclude=args.exclude,**limits)

@@ -92,6 +92,8 @@ Antes de cada tarea que invoque Project Memory, el agente debe ejecutar `preflig
 
 Codex y Claude Code pueden ejecutarlo mediante su herramienta de shell cuando el agente lo invoca. Esta skill no instala un hook de ciclo de vida para cada prompt; por eso no se afirma automatización garantizada si el agente o el entorno no ofrecen ese mecanismo. La integración no depende de ECC, Graphify ni `AGENTS.md`.
 
+`cleanup-day` muestra por defecto una vista previa de artefactos verificables. Sólo ejecuta borrado con `--execute --confirm-cleanup --approved-by IDENTIDAD` y la huella vigente `--plan-sha256` de la vista previa revisada. No limpia Windows globalmente ni toca procesos activos, Git, memoria, respaldos, SDK, cachés compartidas o archivos ajenos.
+
 ## Transferencia a otra IA
 
 Usar `handoff --preview` para revisar el documento antes de exportarlo. Seguir [HANDOFF.md](references/HANDOFF.md): Markdown común para cualquier asistente, motivos de decisiones y antecedentes, alternativas/resoluciones, pruebas declaradas, pendientes, fuentes y límites. No depender de APIs ni de que la otra IA tenga instalada esta skill.

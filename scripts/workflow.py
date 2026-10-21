@@ -11,8 +11,9 @@ from contextlib import contextmanager
 from audit import EXCLUDED, SENSITIVE
 from safety import ensure_safe
 from store import scrub
+from rules import RULES_FILE, validate_document
 
-KINDS = ('initialize', 'source', 'close', 'decision', 'conflict', 'resolution')
+KINDS = ('initialize', 'source', 'rules', 'close', 'decision', 'conflict', 'resolution')
 EVENT_FILES = {'decision': 'decisions.jsonl', 'conflict': 'conflicts.jsonl',
                'resolution': 'conflicts.jsonl'}
 INIT_FILES = {
@@ -91,6 +92,11 @@ def validate(kind, data):
         text(data['reason'], required=True)
         if data['authority'] not in ('candidata', 'confirmada', 'excluida') or not re.fullmatch(r'[0-9a-f]{64}', str(data['sha256'])):
             raise ValueError('Metadata de fuente invalida.')
+        return
+    if kind == 'rules':
+        if set(data) != {'operation', 'document'} or not isinstance(data['operation'], str):
+            raise ValueError('Formato de reglas invalido.')
+        validate_document(data['document'])
         return
     common = {'schema_version', 'id', 'date', 'created_at', 'classification', 'status', 'evidence'}
     extra = {'close': {'module','done','pending','tests','files','tests_status','decisions','conflicts'},
@@ -179,7 +185,7 @@ def existing_events(store, filename):
 
 
 def validate_relations(store, kind, data):
-    if kind in ('initialize', 'source'):
+    if kind in ('initialize', 'source', 'rules'):
         return
     decisions = existing_events(store, 'decisions.jsonl')
     conflicts = existing_events(store, 'conflicts.jsonl')
@@ -232,6 +238,8 @@ def expected_state(store, kind, data, *, strict_evidence=True):
         memory = INIT_FILES
     elif kind == 'source':
         memory = {'sources.json': ''}
+    elif kind == 'rules':
+        memory = {RULES_FILE: ''}
     else:
         # Event appenders do not overwrite unrelated records. Dependency-level
         # snapshots below protect only referenced records, avoiding false
@@ -246,6 +254,8 @@ def expected_state(store, kind, data, *, strict_evidence=True):
         raise ValueError('Directorio de memoria existente; revisar manualmente.')
     if kind == 'close' and state['memory']['sessions/' + data['id'] + '.json'] is not None:
         raise ValueError('Sesion ya registrada.')
+    if kind == 'rules':
+        return state
     if kind == 'source':
         current = snapshot(store, data['path'], official=True)
         if current != data['sha256']:
@@ -390,6 +400,16 @@ def apply_locked(store, envelope, approved_hash, approved_by, mode):
         registry.setdefault('revisions', []).append({'sources': registry['sources'], 'approval': approval, 'reason': data['reason']})
         registry['sources'] = [x for x in registry['sources'] if x['id'] != data['id']] + [{**data, 'approval': approval}]
         store.replace_sources(registry)
+    elif kind == 'rules':
+        payload = data['document']
+        temp_name = RULES_FILE + '.tmp'
+        store.create(temp_name, json.dumps(payload, ensure_ascii=False, indent=2) + '\n')
+        try:
+            os.replace(store.path(temp_name), store.path(RULES_FILE))
+        finally:
+            temp = store.path(temp_name)
+            if temp.exists():
+                temp.unlink()
     else:
         event = {**data, 'approval': approval}
         if kind == 'close':

@@ -15,6 +15,7 @@ Memoria local de proyectos y transferencia de contexto para asistentes de IA.
 - Reanudar con contexto consolidado, carga selectiva y limites configurables (M1/M2).
 - Detectar cambios concurrentes y frescura documental sin sobrescrituras silenciosas (M3).
 - Integrar fuentes grandes con lectura incremental, cobertura diferenciada y salida UTF-8 portable (M4).
+- Cargar reglas globales predeterminadas y excepciones persistentes por proyecto, sin depender de `AGENTS.md`.
 
 ## Instalacion
 
@@ -39,9 +40,13 @@ En Linux, reemplazar las rutas por las del proyecto y usar `python3` si correspo
 
 | Consulta | Preparacion | Persistencia y exportacion |
 |---|---|---|
-| start, audit, recall, resume, decisions, history, help | close, add-decision, initialize, register-source, add-conflict, resolve-conflict | apply, summary --export, roadmap, handoff |
+| start, audit, recall, resume, preflight, check-task, rules, decisions, history, help | close, add-decision, initialize, register-source, add-conflict, resolve-conflict | apply, summary --export, roadmap, handoff |
 
 `summary` sin `--export` es una consulta; `handoff --preview` no escribe. Ver [ayuda](references/HELP.md) y la ayuda individual: `python -X utf8 -B scripts/memory.py handoff --help`.
+
+`rules list` muestra las reglas efectivas. `rules add|modify|deactivate|delete|restore` prepara una propuesta para persistir en `PROJECT_RULES.json`; revisar y aplicar con el flujo supervisado de `apply`. Ver [PROJECT_RULES](references/PROJECT_RULES.md).
+
+Antes de cada tarea, ejecutar `preflight --task "Objetivo" --json` (o `check-task`). Si devuelve `authorization_required`, informar los conflictos y solicitar autorización. Codex y Claude Code pueden ejecutarlo por shell; no se afirma automatización por prompt sin un hook del agente o del entorno.
 
 ## Handoff a otra IA
 

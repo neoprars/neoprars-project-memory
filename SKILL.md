@@ -32,7 +32,7 @@ Al invocar esta skill, el agente debe ejecutar la CLI mediante su herramienta de
 
 1. Determinar la carpeta que contiene el `SKILL.md` cargado (`SKILL_ROOT`). Usar el `scripts/memory.py` de esa misma instalación; no copiarlo, duplicarlo ni asumir que vive en `.agents` o `.claude`.
 2. Determinar la raíz del proyecto a partir del contexto de trabajo. Pasarla siempre explícitamente con `--project`, especialmente si el agente está en un repositorio Git anidado.
-3. Ejecutar primero, en modo lectura, `python -X utf8 -B "SKILL_ROOT/scripts/memory.py" --project "PROJECT_ROOT" start --json`. En Windows usar `python`; en Unix, `python3` si `python` no apunta a Python 3.10+.
+3. Antes de cada nueva tarea que use Project Memory, ejecutar en modo lectura `python -X utf8 -B "SKILL_ROOT/scripts/memory.py" --project "PROJECT_ROOT" preflight --task "OBJETIVO" --json`. `check-task` es un alias equivalente. Luego ejecutar `start --json`; en Windows usar `python` y en Unix, `python3` si corresponde.
 4. Para reanudar, ejecutar `resume --json` con la misma raíz y memoria. La salida predeterminada es compacta; usar `--full-context` solo cuando el usuario o la tarea necesite el cuerpo completo de `PROJECT_STATE.md` y las sesiones recientes. `--max-context-items N` ajusta los límites.
 5. Interpretar `context.state.coverage` como la cobertura e integridad de `PROJECT_STATE.md`, y `context.partial_reasons` y `consolidated_context.coverage.partial_reasons` como motivos explícitos de contexto parcial. Nunca presentar datos omitidos, no verificables o posiblemente obsoletos como confirmados.
 6. Ejecutar del mismo modo `audit`, `handoff`, consultas y comandos de preparación. Los comandos de escritura solo se ejecutan después de la autorización y confirmación exigidas por los formatos; `apply` debe recibir la propuesta y huella exactas.
@@ -81,6 +81,16 @@ Los registros V1.0/V1.2 siguen legibles con autoridad/evidencia desconocida cuan
 Las exportaciones filtran patrones reconocibles de credenciales/contactos/URLs; revisar el contenido antes de compartir. El filtrado no certifica ausencia de datos sensibles ocultos. `start/audit` no copian cuerpos documentales al informe.
 
 Consultar [HELP.md](references/HELP.md) para opciones y [FORMATS.md](references/FORMATS.md) para esquemas. Incorporar [AGENTS_SNIPPET.md](references/AGENTS_SNIPPET.md) solo tras revisar instrucciones existentes y autorización.
+
+## PROJECT_RULES
+
+La skill carga reglas globales predeterminadas independientes del proyecto, lenguaje y agente. Las excepciones del proyecto se persisten en `PROJECT_RULES.json`, sin depender de `AGENTS.md`. Usar `rules list` para consultar y `rules add`, `rules modify`, `rules deactivate`, `rules delete` o `rules restore` para preparar cambios; la persistencia conserva el flujo supervisado de `apply`.
+
+### Preflight por tarea
+
+Antes de cada tarea que invoque Project Memory, el agente debe ejecutar `preflight --task "OBJETIVO" --json`; `check-task` es un alias. El comando carga reglas globales, excepciones y decisiones vigentes, y devuelve `ready` o `authorization_required`. Ante conflictos, informar el motivo y solicitar autorización antes de continuar.
+
+Codex y Claude Code pueden ejecutarlo mediante su herramienta de shell cuando el agente lo invoca. Esta skill no instala un hook de ciclo de vida para cada prompt; por eso no se afirma automatización garantizada si el agente o el entorno no ofrecen ese mecanismo. La integración no depende de ECC, Graphify ni `AGENTS.md`.
 
 ## Transferencia a otra IA
 

@@ -13,6 +13,9 @@ python -X utf8 -B $mem help
 | Comando | Función | Ejemplo |
 |---|---|---|
 | **start** | Contexto y vigencia | `start --json` |
+| **rules** | Listar o preparar reglas del proyecto | `rules list` / `rules add --help` |
+| **preflight** | Verificar reglas y decisiones antes de una tarea | `preflight --task "Objetivo" --json` |
+| **check-task** | Alias de preflight | `check-task --task "Objetivo" --json` |
 | audit | Descubrimiento sin escritura | `audit --json` |
 | recall | Sesiones | `recall --from 2026-10-01 --to 2026-10-11` |
 | resume | Estado y sesiones con memoria | `resume` |

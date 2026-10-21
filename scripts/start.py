@@ -9,6 +9,7 @@ from pathlib import Path
 
 from audit import EXCLUDED, SENSITIVE, LINK, DOC_EXT, LANGUAGES, safe_label, discover_root, audit_project, git_read
 from safety import safe_path
+from rules import RULES_FILE, empty_document, load_text, public
 
 
 class Budget:
@@ -349,7 +350,8 @@ def start_project(project=None, *, memory_root=None, max_files=5000, max_bytes=2
               'partial': False, 'index': {}, 'sources': [], 'references': [],
               'decisions': [], 'conflicts': [], 'pending': [], 'issues': [],
               'git': {'status': 'no verificable'},
-              'requires_explicit_approval_for_writes': True}
+              'requires_explicit_approval_for_writes': True,
+              'project_rules': public(empty_document())}
     if folder is None:
         report['issues'].append('Ruta de memoria insegura o excluida; no se inspecciona ni inicializa.')
         report['partial'] = True
@@ -405,6 +407,16 @@ def start_project(project=None, *, memory_root=None, max_files=5000, max_bytes=2
                 report['issues'].append('JSON invalido: ' + label(name))
                 return None, coverage
         return text, coverage
+    rules_path = allowed_path(root, (folder / RULES_FILE).relative_to(root).as_posix(), exclusions, max_depth)
+    if rules_path is not None and rules_path.is_file():
+        rules_text, rules_coverage = budget.read(rules_path)
+        if rules_text is None or rules_coverage.get('status') != 'completa':
+            report['issues'].append('PROJECT_RULES.json incompleto; se usan reglas predeterminadas.')
+        else:
+            try:
+                report['project_rules'] = public(load_text(rules_text))
+            except ValueError as exc:
+                report['issues'].append(str(exc) + ' Se usan reglas predeterminadas.')
     index, coverage = read_file('INDEX.md')
     report['index'] = {'status': coverage['status'] if coverage else 'ausente'}
     reference_targets = []

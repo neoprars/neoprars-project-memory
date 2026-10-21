@@ -20,6 +20,7 @@ from store import Store, READ_DEFAULTS, scrub
 from safety import safe_path
 from workflow import prepare, apply, event_base, snapshot, source_registry
 from context import consolidate
+from rules import RULES_FILE, check_task, empty_document, load_text, operation, public, render_preflight
 
 ROADMAP_NAMES = ('ROADMAP.md','ROADMAP.txt','roadmap.md','roadmap.txt')
 STATE_NAMES = ('PROJECT_STATE.md','PROJECT_STATE.txt')
@@ -34,6 +35,9 @@ COMMANDS = (
     ('handoff','Transferir contexto portable en Markdown o TXT','handoff --preview'),
     ('close','Preparar cierre; guardar solo propuesta confirmada','close --date 2026-10-09 --done "Trabajo confirmado"'),
     ('history','Consultar hashes y fechas Git del roadmap','history'),
+    ('rules','Listar y preparar cambios de reglas del proyecto','rules list'),
+    ('preflight','Verificar reglas y decisiones antes de una tarea','preflight --task "Objetivo"'),
+    ('check-task','Alias de preflight para verificar una tarea','check-task --task "Objetivo"'),
     ('help','Mostrar comandos y ejemplos','help'),
 )
 EXTRA = (
@@ -231,6 +235,13 @@ def main():
                                    help='Cantidad maxima de elementos por bloque consolidado')
     for name in ('roadmap','handoff','history'):
         parsers[name].add_argument('--roadmap-path')
+    parsers['rules'].add_argument('action', nargs='?', choices=('list','add','modify','deactivate','delete','restore'), default='list')
+    parsers['rules'].add_argument('--id', dest='rule_id')
+    parsers['rules'].add_argument('--title')
+    parsers['rules'].add_argument('--text')
+    for name in ('preflight', 'check-task'):
+        parsers[name].add_argument('--task', required=True, help='Objetivo o tarea que se va a iniciar')
+        parsers[name].add_argument('--scope', action='append', default=[], help='Ruta o limite declarado; se puede repetir')
     p=parsers['handoff']
     p.add_argument('--preview',action='store_true',help='Mostrar transferencia sin crear archivos')
     p.add_argument('--format',choices=('markdown','txt'),default='markdown')
@@ -283,12 +294,17 @@ def main():
     if not math.isfinite(args.max_seconds):
         parser.error('Tiempo invalido.')
     try:
-        if args.cmd in ('audit','start'):
+        if args.cmd in ('audit','start','preflight','check-task'):
             options={**limits,'exclude':args.exclude}
-            report=(start_project(args.project,memory_root=args.memory_root,mode=args.mode,**options)
-                    if args.cmd=='start' else audit_project(args.project,**options))
+            if args.cmd in ('preflight', 'check-task'):
+                context = start_project(args.project, memory_root=args.memory_root, mode=args.mode, **options)
+                report = check_task(context, args.task, args.scope)
+            else:
+                report=(start_project(args.project,memory_root=args.memory_root,mode=args.mode,**options)
+                        if args.cmd=='start' else audit_project(args.project,**options))
             print(json.dumps(report,ensure_ascii=True,indent=2) if args.json else
-                  (render_start(report) if args.cmd=='start' else render(report)))
+                  (render_start(report) if args.cmd=='start' else
+                   render_preflight(report) if args.cmd in ('preflight', 'check-task') else render(report)))
             return
         if args.cmd=='help':
             print('NEOPRARS PROJECT MEMORY V1.5.0 — start: punto de entrada recomendado')
@@ -298,6 +314,18 @@ def main():
                   '--project antes del comando; --memory-root y presupuestos despues.')
             return
         store=Store(args.project,args.memory_root,exclude=args.exclude,**limits)
+        if args.cmd == 'rules':
+            current = empty_document()
+            if store.path(RULES_FILE).is_file():
+                current = load_text(store.read(RULES_FILE))
+            if args.action == 'list':
+                result = {'command': 'rules', 'action': 'list', 'read_only': True, **public(current)}
+            else:
+                changed = operation(current, args.action, args.rule_id, title=args.title, text=args.text)
+                result = prepare(store, 'rules', {'operation': args.action, 'document': changed})
+                result['command'] = 'rules'
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return
         if args.cmd=='apply':
             contents=store.read(args.proposal,official=True)
             if contents is None or store.budget.coverage[-1]['status']!='completa':

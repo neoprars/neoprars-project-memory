@@ -77,6 +77,7 @@ def consolidate(context, sessions, *, max_items=100):
         coverage_issues = []
     coverage_issues = coverage_issues[:max_items]
     return {'decisions': decisions, 'progress': progress, 'pending': pending, 'risks': risks,
+            'project_rules': context.get('project_rules', {}),
             'last_session': last,
             'coverage': {'partial': bool(context.get('partial')), 'issues': coverage_issues,
                          'omitted': context.get('omitted', []),

@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 import tempfile
+from collections import Counter
 from pathlib import Path
 
 from audit import discover_root, safe_label
@@ -28,6 +29,11 @@ PROJECT_MARKERS = {'.sln', '.slnx', '.csproj', '.fsproj', '.vbproj',
                    'cargo.toml', 'go.mod', 'makefile', 'cmakelists.txt',
                    'pyproject.toml', 'setup.py', 'setup.cfg'}
 BUILD_CACHE_DIRS = {'bin', 'obj'}
+BUILD_GENERATED_SUFFIXES = {'.a', '.class', '.dylib', '.flat', '.jar', '.lz4',
+                           '.mui', '.props', '.resx', '.resources', '.so',
+                           '.stamp', '.targets', '.up2date', '.winmd'}
+DISTRIBUTION_SUFFIXES = {'.aab', '.appimage', '.dmg', '.exe', '.ipa', '.msix',
+                         '.pkg', '.apk'}
 
 
 def _canonical(path):
@@ -125,8 +131,122 @@ def _project_evidence(path, root):
 
 
 def _build_cache_dir(path, root):
-    return (_project_evidence(path, root)
-            and _artifact_dir(path))
+    if not _project_evidence(path, root):
+        return False, 'evidencia de proyecto insuficiente'
+    files = _walk_files(path)
+    if not files:
+        return False, 'directorio vacio o no verificable'
+    for file in files:
+        valid, reason = _build_cache_file(file, path)
+        if not valid:
+            return False, reason
+    return True, 'perfil build-cache: evidencia contextual y artefactos regenerables verificados'
+
+
+def _build_cache_file(file, build_dir):
+    name = file.name.casefold()
+    suffix = file.suffix.casefold()
+    relative_parts = {part.casefold() for part in file.relative_to(build_dir).parts[:-1]}
+    if name in {'.lock', 'lock', '.pid', 'pid'} or suffix in {'.lock', '.pid'}:
+        return False, 'archivo activo o lock'
+    generated_name = (name == 'android_debug_keystore.flag'
+                      or name == 'audit.txt' and 'native-tests' in relative_parts
+                      or name.startswith('.mscoveragesourcerootsmapping_')
+                      or name.endswith('generatedmsbuildeditorconfig.editorconfig')
+                      or name == 'apphost.exe')
+    if generated_name:
+        return True, ''
+    if suffix in DISTRIBUTION_SUFFIXES:
+        return False, 'entregable de distribucion protegido'
+    if suffix in ARTIFACT_SUFFIXES or suffix in BUILD_GENERATED_SUFFIXES:
+        return True, ''
+    if suffix == '.cs':
+        generated = (name.endswith('.g.cs') or name.endswith('.g.i.cs')
+                     or name.endswith('.assemblyinfo.cs')
+                     or name.endswith('.assemblyattributes.cs')
+                     or name.endswith('.globalusings.g.cs')
+                     or name.endswith('.generated.cs')
+                     or name.startswith('__microsoft.android.resource.designer'))
+        return (True, '') if generated else (False, 'posible fuente original')
+    if suffix == '.java':
+        generated = name in {'r.java', 'buildconfig.java'} or 'android' in relative_parts
+        return (True, '') if generated else (False, 'posible fuente original')
+    if suffix == '.json':
+        generated = (name in {'project.assets.json', 'native-apk-audit.json'}
+                     or name.endswith('.deps.json') or name.endswith('.runtimeconfig.json')
+                     or name.endswith('.nuget.dgspec.json') or name.endswith('.sourcelink.json'))
+        return (True, '') if generated else (False, 'archivo JSON no reconocido')
+    if suffix == '.xml':
+        generated = (name == 'androidmanifest.xml' or name.endswith('.jlo.xml')
+                     or name.endswith('.typemap.xml')
+                     or bool(relative_parts & {'android', 'assets', 'res', 'resources'}))
+        return (True, '') if generated else (False, 'archivo XML no reconocido')
+    if suffix == '.png':
+        return ((True, '') if relative_parts & {'android', 'assets', 'res', 'resources', 'drawable', 'mipmap'}
+                else (False, 'imagen fuera de una ruta generada reconocida'))
+    if suffix == '.txt':
+        generated = (name in {'acw-map.txt', 'case_map.txt', 'customview-map.txt',
+                              'native-dedup.txt', '__environment__.txt', 'r.txt'}
+                     or name.startswith('_compile') or name.endswith('.filelistabsolute.txt'))
+        return (True, '') if generated else (False, 'archivo de texto no reconocido')
+    return False, 'extension o archivo desconocido'
+
+
+def _select_build_cache(path, root, excludes, build_root=None):
+    """Return safe descendants without promoting a mixed build directory."""
+    build_root = path if build_root is None else build_root
+    try:
+        entries = list(path.iterdir())
+    except OSError:
+        return [], False, [(path, 'contenido no verificable')]
+    selected = []
+    blockers = []
+    all_safe = True
+    has_content = False
+    for entry in entries:
+        if entry.is_symlink():
+            all_safe = False
+            blockers.append((entry, 'enlace simbolico protegido'))
+            continue
+        if entry.is_dir():
+            has_content = True
+            if _protected(entry, root):
+                all_safe = False
+                blockers.append((entry, 'ruta protegida'))
+                continue
+            if _excluded(entry, root, excludes):
+                all_safe = False
+                blockers.append((entry, 'exclusion configurable'))
+                continue
+            children, child_safe, child_blockers = _select_build_cache(
+                entry, root, excludes, build_root)
+            selected.extend(children)
+            blockers.extend(child_blockers)
+            if not child_safe:
+                all_safe = False
+        elif entry.is_file():
+            has_content = True
+            valid, reason = _build_cache_file(entry, build_root)
+            if valid:
+                selected.append(entry)
+            else:
+                all_safe = False
+                blockers.append((entry, reason))
+    if all_safe and has_content:
+        # Keep build-cache candidates at file granularity. This makes the
+        # plan snapshot precise and prevents a later child mutation from
+        # being hidden behind a directory candidate.
+        return selected, True, []
+    return selected, False, blockers
+
+
+def _blocker_summary(blockers, root):
+    if not blockers:
+        return 'contenido no verificablemente descartable'
+    reasons = Counter(reason for _, reason in blockers)
+    summary = ', '.join(f'{reason} ({count})' for reason, count in reasons.most_common(3))
+    examples = ', '.join(_display(path, root) for path, _ in blockers[:3])
+    return f'contenido mixto; bloqueos: {summary}; ejemplos: {examples}'
 
 
 def _size(path):
@@ -138,6 +258,44 @@ def _size(path):
     return sum(_size(file) for file in _walk_files(path))
 
 
+def _snapshot(path):
+    """Return size and a metadata snapshot used to invalidate stale plans."""
+    digest = hashlib.sha256()
+    if path.is_file():
+        stat = path.stat()
+        digest.update(b'file\0')
+        digest.update(path.name.encode('utf-8', 'surrogateescape'))
+        digest.update(f'\0{stat.st_size}\0{stat.st_mtime_ns}\0{stat.st_ino}'.encode())
+        return stat.st_size, digest.hexdigest()
+
+    total = 0
+    entries = []
+    try:
+        for current, dirs, names in os.walk(path, topdown=True, followlinks=False):
+            current_path = Path(current)
+            dirs[:] = sorted(name for name in dirs
+                             if not (current_path / name).is_symlink())
+            for name in dirs:
+                child = current_path / name
+                stat = child.stat()
+                entries.append(('dir', child.relative_to(path).as_posix(),
+                                0, stat.st_mtime_ns, stat.st_ino))
+            for name in sorted(names):
+                child = current_path / name
+                if child.is_symlink() or not child.is_file():
+                    continue
+                stat = child.stat()
+                total += stat.st_size
+                entries.append(('file', child.relative_to(path).as_posix(),
+                                stat.st_size, stat.st_mtime_ns, stat.st_ino))
+    except OSError:
+        return 0, 'unverificable'
+    for kind, relative, size, mtime_ns, inode in sorted(entries):
+        digest.update(f'{kind}\0{relative}\0{size}\0{mtime_ns}\0{inode}\n'.encode(
+            'utf-8', 'surrogateescape'))
+    return total, digest.hexdigest()
+
+
 def _display(path, root):
     if _inside(path, root):
         return _canonical(path).relative_to(_canonical(root)).as_posix()
@@ -145,8 +303,10 @@ def _display(path, root):
 
 
 def _candidate(path, root, scope, reason):
+    size, snapshot_sha256 = _snapshot(path)
     return {'path': _display(path, root), 'absolute_path': str(_canonical(path)),
-            'scope': scope, 'reason': reason, 'size_bytes': _size(path), 'verified': True}
+            'scope': scope, 'reason': reason, 'size_bytes': size,
+            'snapshot_sha256': snapshot_sha256, 'verified': True}
 
 
 def _marker_candidate(folder, root):
@@ -197,11 +357,23 @@ def scan(project=None, *, include_external=True, max_items=500,
                         omitted.append({'path': _display(path, root), 'reason': 'ruta protegida'})
                     elif _excluded(path, root, exclude):
                         omitted.append({'path': _display(path, root), 'reason': 'exclusion configurable'})
-                    elif profile == 'build-cache' and not _project_evidence(path, root):
-                        omitted.append({'path': _display(path, root), 'reason': 'evidencia de proyecto insuficiente'})
-                    elif (profile == 'build-cache' and _build_cache_dir(path, root)) or (profile == 'default' and _artifact_dir(path)):
-                        reason = ('perfil build-cache: evidencia de proyecto y artefactos regenerables verificados'
-                                  if profile == 'build-cache' else 'directorio de artefactos verificable')
+                    elif profile == 'build-cache':
+                        if not _project_evidence(path, root):
+                            omitted.append({'path': _display(path, root),
+                                            'reason': 'evidencia de proyecto insuficiente'})
+                            dirs.remove(name)
+                            continue
+                        selected, all_safe, blockers = _select_build_cache(path, root, exclude)
+                        for selected_path in selected:
+                            candidates.append(_candidate(
+                                selected_path, root, 'project',
+                                'perfil build-cache: subruta regenerable verificada'))
+                        if not all_safe:
+                            omitted.append({'path': _display(path, root),
+                                            'reason': _blocker_summary(blockers, root)})
+                        dirs.remove(name)
+                    elif _artifact_dir(path):
+                        reason = 'directorio de artefactos verificable'
                         candidates.append(_candidate(path, root, 'project', reason))
                         dirs.remove(name)
                     else:
@@ -257,6 +429,7 @@ def execute(project=None, *, include_external=True, max_items=500, profile='defa
     recovered = 0
     for item in preview['candidates']:
         path = Path(item['absolute_path'])
+        removed_files = []
         try:
             if _protected(path, _canonical(preview['root'])):
                 omitted.append({'path': item['path'], 'reason': 'ruta protegida al ejecutar'})
@@ -264,19 +437,28 @@ def execute(project=None, *, include_external=True, max_items=500, profile='defa
             before = _size(path)
             if path.is_file():
                 path.unlink()
+                deleted.append({'path': item['path'], 'size_bytes': before})
+                recovered += before
             elif path.is_dir():
+                removed_files = []
                 for child in sorted(_walk_files(path), key=lambda value: len(value.parts), reverse=True):
+                    child_size = _size(child)
                     child.unlink()
+                    removed_files.append({'path': _display(child, _canonical(preview['root'])),
+                                          'size_bytes': child_size})
                 for current, dirs, _ in os.walk(path, topdown=False):
                     for name in dirs:
                         (Path(current) / name).rmdir()
                 path.rmdir()
+                deleted.extend(removed_files)
+                recovered += sum(item['size_bytes'] for item in removed_files)
             else:
                 omitted.append({'path': item['path'], 'reason': 'ya no existe'})
                 continue
-            deleted.append({'path': item['path'], 'size_bytes': before})
-            recovered += before
         except (OSError, ValueError) as exc:
+            if 'removed_files' in locals() and removed_files:
+                deleted.extend(removed_files)
+                recovered += sum(item['size_bytes'] for item in removed_files)
             errors.append({'path': item['path'], 'reason': str(exc)})
     return {'command': 'cleanup-day', 'mode': 'executed', 'read_only': False,
             'approved_by': approved_by, 'deleted': deleted, 'omitted': omitted,

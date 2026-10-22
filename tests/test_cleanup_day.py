@@ -1,7 +1,9 @@
 """Directed tests for conservative cleanup-day preview and protection."""
 import json
+import os
 from pathlib import Path
 import tempfile
+import time
 import unittest
 
 import test_memory as fixtures
@@ -124,8 +126,8 @@ class CleanupDayTests(unittest.TestCase):
                       {item['absolute_path'] for item in legacy['candidates']})
         profile = cleanup.scan(self.root, include_external=False, profile='build-cache')
         paths = {item['absolute_path'] for item in profile['candidates']}
-        self.assertIn(str(artifact.parent.parent.resolve()), paths)
-        self.assertNotIn(str(legacy_only.parent.parent.resolve()), paths)
+        self.assertIn(str(artifact.resolve()), paths)
+        self.assertNotIn(str(legacy_only.resolve()), paths)
         self.assertTrue(legacy_only.exists())
 
     def test_build_cache_rejects_distribution_outputs_and_honors_exclusions(self):
@@ -145,6 +147,24 @@ class CleanupDayTests(unittest.TestCase):
         reasons = {item['reason'] for item in report['omitted']}
         self.assertIn('exclusion configurable', reasons)
 
+    def test_build_cache_honors_max_items_without_changing_exclusion_safety(self):
+        project = self.root / 'app'
+        project.mkdir()
+        (project / 'app.csproj').write_text('<Project />', encoding='utf-8')
+        files = [self.put(f'app/bin/Debug/f{index}.dll', 'x') for index in range(5)]
+
+        limited = cleanup.scan(self.root, include_external=False, profile='build-cache',
+                               max_items=2)
+        self.assertEqual(len(limited['candidates']), 2)
+        self.assertEqual(limited['space_recoverable_bytes'], 2)
+
+        excluded = cleanup.scan(self.root, include_external=False, profile='build-cache',
+                                exclude=['app/bin'], max_items=10)
+        self.assertEqual(excluded['candidates'], [])
+        self.assertIn('exclusion configurable',
+                      {item['reason'] for item in excluded['omitted']})
+        self.assertTrue(all(path.exists() for path in files))
+
     def test_build_cache_rejects_source_and_active_content(self):
         project = self.root / 'app'
         project.mkdir()
@@ -158,6 +178,137 @@ class CleanupDayTests(unittest.TestCase):
         self.assertNotIn(str(lock.parent.parent.resolve()), paths)
         self.assertTrue(source.exists())
         self.assertTrue(lock.exists())
+
+    def test_build_cache_recognizes_maui_android_generated_context(self):
+        project = self.root / 'maui'
+        project.mkdir()
+        (project / 'maui.csproj').write_text('<Project />', encoding='utf-8')
+        generated = {
+            'obj/Debug/net10.0-android/.NETCoreApp,Version=v10.0.AssemblyAttributes.cs': 'generated',
+            'obj/Debug/net10.0-android/maui.AssemblyInfo.cs': 'generated',
+            'obj/Debug/net10.0-android/maui.GlobalUsings.g.cs': 'generated',
+            'obj/Debug/net10.0-android/AndroidManifest.xml': 'generated',
+            'obj/Debug/net10.0-android/android/assets/arm64/R.java': 'generated',
+            'obj/Debug/net10.0-android/android/assets/arm64/Binding.jlo.xml': 'generated',
+            'obj/Debug/net10.0-android/android/res/drawable/icon.png': 'generated',
+            'obj/Debug/net10.0-android/android/resources/resource.flat': 'generated',
+            'obj/Debug/net10.0-android/android/classes/Generated.class': 'generated',
+            'obj/Debug/net10.0-android/android_debug_keystore.flag': 'generated',
+            'obj/Debug/net10.0-android/maui.GeneratedMSBuildEditorConfig.editorconfig': 'generated',
+            'bin/Debug/net10.0-android/maui.dll': 'artifact',
+            'bin/Debug/net10.0-android/maui.pdb': 'artifact',
+            'bin/Debug/net10.0-android/maui.deps.json': 'generated',
+        }
+        for name, content in generated.items():
+            self.put('maui/' + name, content)
+
+        report = cleanup.scan(self.root, include_external=False, profile='build-cache')
+        paths = {item['path'] for item in report['candidates']}
+        self.assertTrue(any(path == 'maui/obj' or path.startswith('maui/obj/') for path in paths))
+        self.assertTrue(any(path == 'maui/bin' or path.startswith('maui/bin/') for path in paths))
+
+    def test_build_cache_keeps_mixed_maui_outputs_with_source_unknown_or_distribution(self):
+        project = self.root / 'maui'
+        project.mkdir()
+        (project / 'maui.csproj').write_text('<Project />', encoding='utf-8')
+        source = self.put('maui/bin/Debug/net10.0/PresentationSources/MainPage.cs', 'original')
+        unknown = self.put('maui/obj/Debug/net10.0-android/custom.unknown', 'unknown')
+        distribution = self.put('maui/bin/Release/net10.0-android/maui-Signed.apk', 'signed')
+
+        report = cleanup.scan(self.root, include_external=False, profile='build-cache')
+        paths = {item['path'] for item in report['candidates']}
+        self.assertNotIn('maui/bin', paths)
+        self.assertNotIn('maui/obj', paths)
+        self.assertTrue(source.exists())
+        self.assertTrue(unknown.exists())
+        self.assertTrue(distribution.exists())
+        reasons = ' '.join(item['reason'] for item in report['omitted'])
+        self.assertIn('posible fuente original', reasons)
+        self.assertIn('extension o archivo desconocido', reasons)
+        self.assertIn('entregable de distribucion protegido', reasons)
+
+    def test_build_cache_selects_safe_nested_subpaths_without_promoting_mixed_parent(self):
+        project = self.root / 'maui'
+        project.mkdir()
+        (project / 'maui.csproj').write_text('<Project />', encoding='utf-8')
+        safe = self.put('maui/obj/Debug/net10.0-android/android/assets/arm64/Binding.jlo.xml', 'generated')
+        self.put('maui/obj/Debug/net10.0-android/android/assets/arm64/Binding.typemap.xml', 'generated')
+        protected = self.put('maui/obj/Debug/net10.0-android/android/bin/app.apk', 'distribution')
+
+        report = cleanup.scan(self.root, include_external=False, profile='build-cache')
+        paths = {item['path'] for item in report['candidates']}
+        self.assertIn('maui/obj/Debug/net10.0-android/android/assets/arm64/Binding.jlo.xml', paths)
+        self.assertNotIn('maui/obj', paths)
+        self.assertNotIn('maui/obj/Debug/net10.0-android/android', paths)
+        self.assertTrue(safe.exists())
+        self.assertTrue(protected.exists())
+        self.assertTrue(any(item['path'] == 'maui/obj' for item in report['omitted']))
+
+    def test_build_cache_preserves_symlinked_and_active_subpaths_and_is_idempotent(self):
+        project = self.root / 'maui'
+        project.mkdir()
+        (project / 'maui.csproj').write_text('<Project />', encoding='utf-8')
+        safe = self.put('maui/bin/Debug/maui.dll', 'artifact')
+        self.put('maui/bin/Debug/.lock', 'active')
+        target = self.put('outside.dll', 'outside')
+        link = self.root / 'maui' / 'bin' / 'Debug' / 'linked.dll'
+        try:
+            link.symlink_to(target)
+        except OSError:
+            link = None
+
+        first = cleanup.scan(self.root, include_external=False, profile='build-cache')
+        second = cleanup.scan(self.root, include_external=False, profile='build-cache')
+        self.assertEqual(first['plan_sha256'], second['plan_sha256'])
+        self.assertEqual(first['candidates'], second['candidates'])
+        self.assertNotIn('maui/bin', {item['path'] for item in first['candidates']})
+        self.assertTrue(safe.exists())
+        if link is not None:
+            self.assertTrue(link.is_symlink())
+
+    def test_execute_rejects_same_size_candidate_mutation_with_stale_plan(self):
+        project = self.root / 'maui'
+        project.mkdir()
+        (project / 'maui.csproj').write_text('<Project />', encoding='utf-8')
+        candidate = self.put('maui/bin/Debug/maui.dll', 'old!')
+
+        preview = cleanup.scan(self.root, include_external=False, profile='build-cache')
+        candidate.write_bytes(b'new!')
+        os.utime(candidate, ns=(time.time_ns() + 1_000_000_000,) * 2)
+
+        with self.assertRaises(ValueError):
+            cleanup.execute(self.root, include_external=False, profile='build-cache',
+                            plan_sha256=preview['plan_sha256'], approved_by='fixture-user',
+                            confirm_cleanup=True)
+        self.assertTrue(candidate.exists())
+
+    def test_execute_reports_partial_progress_on_interruption(self):
+        project = self.root / 'maui'
+        project.mkdir()
+        (project / 'maui.csproj').write_text('<Project />', encoding='utf-8')
+        files = [self.put(f'maui/obj/Debug/f{index}.dll', 'x') for index in range(10)]
+        preview = cleanup.scan(self.root, include_external=False, profile='build-cache')
+        original_unlink = Path.unlink
+        calls = {'count': 0}
+
+        def interrupted(path, *args, **kwargs):
+            calls['count'] += 1
+            if calls['count'] == 4:
+                raise OSError('synthetic interruption')
+            return original_unlink(path, *args, **kwargs)
+
+        Path.unlink = interrupted
+        try:
+            result = cleanup.execute(self.root, include_external=False, profile='build-cache',
+                                     plan_sha256=preview['plan_sha256'],
+                                     approved_by='fixture-user', confirm_cleanup=True)
+        finally:
+            Path.unlink = original_unlink
+
+        self.assertEqual(len(result['errors']), 1)
+        self.assertEqual(len(result['deleted']), 9)
+        self.assertEqual(result['space_recovered_bytes'], 9)
+        self.assertEqual(sum(path.exists() for path in files), 1)
 
 
 if __name__ == '__main__':

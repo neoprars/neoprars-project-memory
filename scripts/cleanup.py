@@ -10,7 +10,7 @@ from audit import discover_root, safe_label
 MARKER = '.neoprars-cleanup.json'
 SCHEMA_VERSION = 1
 PROTECTED_PARTS = {
-    '.git', '.agents', '.claude', '.codex', 'docs/memory', 'memory',
+    '.git', '.agents', '.claude', '.codex', 'docs/memory', 'docs/audits', 'memory',
     'backup', 'backups', 'evidence', 'sessions', 'sdk', 'node_modules',
     '.npm', '.nuget', '.cache', 'NeoprarsPosVenta',
 }

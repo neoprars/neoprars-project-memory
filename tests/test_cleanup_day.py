@@ -93,6 +93,25 @@ class CleanupDayTests(unittest.TestCase):
         self.assertTrue(active.exists())
         self.assertTrue(protected.exists())
 
+    def test_protects_docs_audits_and_nested_pycache_from_preview_and_execution(self):
+        protected = self.put('docs/audits/report.json', 'audit evidence')
+        nested = self.put('docs/audits/__pycache__/audit.cpython-311.pyc', 'bytecode')
+        other = self.put('docs/audits/nested/deep.txt', 'audit evidence')
+
+        preview = cleanup.scan(self.root, include_external=False)
+        candidates = {item['absolute_path'] for item in preview['candidates']}
+        self.assertFalse(any(str(path.resolve()) in candidates for path in (protected, nested, other)))
+        self.assertNotIn(str((self.root / 'docs' / 'audits' / '__pycache__').resolve()), candidates)
+
+        result = cleanup.execute(self.root, include_external=False,
+                                 plan_sha256=preview['plan_sha256'],
+                                 approved_by='fixture-user', confirm_cleanup=True)
+        self.assertEqual(result['mode'], 'executed')
+        self.assertEqual(result['deleted'], [])
+        self.assertTrue(protected.exists())
+        self.assertTrue(nested.exists())
+        self.assertTrue(other.exists())
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -112,6 +112,53 @@ class CleanupDayTests(unittest.TestCase):
         self.assertTrue(nested.exists())
         self.assertTrue(other.exists())
 
+    def test_build_cache_profile_requires_project_evidence_and_keeps_default_behavior(self):
+        project = self.root / 'app'
+        (project / 'app.csproj').parent.mkdir(parents=True, exist_ok=True)
+        (project / 'app.csproj').write_text('<Project />', encoding='utf-8')
+        artifact = self.put('app/bin/Debug/app.dll', 'artifact')
+        legacy_only = self.put('other/bin/Debug/library.dll', 'artifact')
+
+        legacy = cleanup.scan(self.root, include_external=False)
+        self.assertIn(str(artifact.parent.parent.resolve()),
+                      {item['absolute_path'] for item in legacy['candidates']})
+        profile = cleanup.scan(self.root, include_external=False, profile='build-cache')
+        paths = {item['absolute_path'] for item in profile['candidates']}
+        self.assertIn(str(artifact.parent.parent.resolve()), paths)
+        self.assertNotIn(str(legacy_only.parent.parent.resolve()), paths)
+        self.assertTrue(legacy_only.exists())
+
+    def test_build_cache_rejects_distribution_outputs_and_honors_exclusions(self):
+        project = self.root / 'app'
+        project.mkdir()
+        (project / 'package.json').write_text('{}', encoding='utf-8')
+        signed = self.put('app/bin/Release/app-Signed.apk', 'distribution')
+        excluded = self.put('app/obj/Debug/generated.dll', 'artifact')
+
+        report = cleanup.scan(self.root, include_external=False, profile='build-cache',
+                              exclude=['app/obj'])
+        paths = {item['absolute_path'] for item in report['candidates']}
+        self.assertNotIn(str(signed.parent.parent.resolve()), paths)
+        self.assertNotIn(str(excluded.parent.parent.resolve()), paths)
+        self.assertTrue(signed.exists())
+        self.assertTrue(excluded.exists())
+        reasons = {item['reason'] for item in report['omitted']}
+        self.assertIn('exclusion configurable', reasons)
+
+    def test_build_cache_rejects_source_and_active_content(self):
+        project = self.root / 'app'
+        project.mkdir()
+        (project / 'pyproject.toml').write_text('[build-system]\n', encoding='utf-8')
+        source = self.put('app/bin/generated.py', 'source')
+        lock = self.put('app/obj/.lock', 'active')
+
+        report = cleanup.scan(self.root, include_external=False, profile='build-cache')
+        paths = {item['absolute_path'] for item in report['candidates']}
+        self.assertNotIn(str(source.parent.parent.resolve()), paths)
+        self.assertNotIn(str(lock.parent.parent.resolve()), paths)
+        self.assertTrue(source.exists())
+        self.assertTrue(lock.exists())
+
 
 if __name__ == '__main__':
     unittest.main()

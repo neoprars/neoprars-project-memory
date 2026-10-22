@@ -250,6 +250,8 @@ def main():
     parsers['cleanup-day'].add_argument('--plan-sha256', help='Huella de la vista previa revisada')
     parsers['cleanup-day'].add_argument('--max-items', type=int, default=500)
     parsers['cleanup-day'].add_argument('--no-external', action='store_true', help='No inspeccionar temporales externos')
+    parsers['cleanup-day'].add_argument('--profile', choices=('default', 'build-cache'), default='default',
+                                        help='Perfil explicito; build-cache exige evidencia de artefactos regenerables')
     p=parsers['handoff']
     p.add_argument('--preview',action='store_true',help='Mostrar transferencia sin crear archivos')
     p.add_argument('--format',choices=('markdown','txt'),default='markdown')
@@ -316,11 +318,12 @@ def main():
             return
         if args.cmd == 'cleanup-day':
             report = (execute_cleanup(args.project, include_external=not args.no_external,
-                                      max_items=args.max_items, plan_sha256=args.plan_sha256,
+                                      max_items=args.max_items, profile=args.profile, exclude=args.exclude,
+                                      plan_sha256=args.plan_sha256,
                                       approved_by=args.approved_by, confirm_cleanup=args.confirm_cleanup)
                       if args.execute else
                       scan_cleanup(args.project, include_external=not args.no_external,
-                                   max_items=args.max_items))
+                                   max_items=args.max_items, profile=args.profile, exclude=args.exclude))
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return
         if args.cmd=='help':

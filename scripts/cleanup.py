@@ -23,6 +23,11 @@ SOURCE_SUFFIXES = {'.py', '.pyw', '.cs', '.fs', '.fsx', '.vb', '.js', '.ts',
                    '.tsx', '.jsx', '.java', '.kt', '.kts', '.go', '.rs', '.cpp',
                    '.c', '.h', '.hpp', '.sql', '.md', '.txt', '.json', '.yaml',
                    '.yml', '.toml', '.xml', '.sln', '.csproj', '.fsproj'}
+PROJECT_MARKERS = {'.sln', '.slnx', '.csproj', '.fsproj', '.vbproj',
+                   'package.json', 'pom.xml', 'build.gradle', 'build.gradle.kts',
+                   'cargo.toml', 'go.mod', 'makefile', 'cmakelists.txt',
+                   'pyproject.toml', 'setup.py', 'setup.cfg'}
+BUILD_CACHE_DIRS = {'bin', 'obj'}
 
 
 def _canonical(path):
@@ -47,6 +52,21 @@ def _protected(path, root):
         if part.casefold() in PROTECTED_PARTS:
             return True
         if '/'.join(parts[:index + 1]).casefold() in PROTECTED_PARTS:
+            return True
+    return False
+
+
+def _excluded(path, root, excludes):
+    relative = _display(path, root).casefold().strip('/')
+    absolute = _canonical(path).as_posix().casefold().rstrip('/')
+    for raw in excludes or ():
+        value = str(raw).replace('\\', '/').strip().casefold().strip('/')
+        if not value:
+            continue
+        if value.startswith('/') or ':' in value[:3]:
+            if absolute == value.rstrip('/') or absolute.startswith(value.rstrip('/') + '/'):
+                return True
+        elif relative == value or relative.startswith(value + '/'):
             return True
     return False
 
@@ -82,6 +102,31 @@ def _artifact_dir(path):
         return all(file.suffix.lower() in ARTIFACT_SUFFIXES or file.name.endswith(('.deps.json', '.runtimeconfig.json'))
                    for file in files)
     return False
+
+
+def _project_evidence(path, root):
+    current = path.parent
+    root = _canonical(root)
+    while True:
+        try:
+            current.relative_to(root)
+        except ValueError:
+            return False
+        try:
+            if any(child.is_file() and (child.suffix.casefold() in PROJECT_MARKERS
+                                        or child.name.casefold() in PROJECT_MARKERS)
+                   for child in current.iterdir()):
+                return True
+        except OSError:
+            return False
+        if current == root:
+            return False
+        current = current.parent
+
+
+def _build_cache_dir(path, root):
+    return (_project_evidence(path, root)
+            and _artifact_dir(path))
 
 
 def _size(path):
@@ -123,9 +168,12 @@ def _marker_candidate(folder, root):
     return _candidate(folder, root, 'external-temp', 'marcador de propiedad y descartabilidad verificado')
 
 
-def scan(project=None, *, include_external=True, max_items=500):
+def scan(project=None, *, include_external=True, max_items=500,
+         profile='default', exclude=()):
     if max_items < 1:
         raise ValueError('max_items invalido')
+    if profile not in ('default', 'build-cache'):
+        raise ValueError('perfil de limpieza invalido')
     root, evidence = discover_root(project)
     root = _canonical(root)
     if not root.is_dir():
@@ -137,16 +185,24 @@ def scan(project=None, *, include_external=True, max_items=500):
         for current, dirs, files in os.walk(root, topdown=True, followlinks=False):
             current_path = Path(current)
             dirs[:] = [name for name in dirs if not (current_path / name).is_symlink()]
-            if _protected(current_path, root):
+            if _protected(current_path, root) or _excluded(current_path, root, exclude):
                 dirs[:] = []
                 continue
             for name in list(dirs):
                 path = current_path / name
-                if path.name in BUILD_DIRS or path.name in ('bin', 'obj'):
+                is_profile_dir = (path.name in BUILD_CACHE_DIRS if profile == 'build-cache'
+                                  else path.name in BUILD_DIRS or path.name in BUILD_CACHE_DIRS)
+                if is_profile_dir:
                     if _protected(path, root):
                         omitted.append({'path': _display(path, root), 'reason': 'ruta protegida'})
-                    elif _artifact_dir(path):
-                        candidates.append(_candidate(path, root, 'project', 'directorio de artefactos verificable'))
+                    elif _excluded(path, root, exclude):
+                        omitted.append({'path': _display(path, root), 'reason': 'exclusion configurable'})
+                    elif profile == 'build-cache' and not _project_evidence(path, root):
+                        omitted.append({'path': _display(path, root), 'reason': 'evidencia de proyecto insuficiente'})
+                    elif (profile == 'build-cache' and _build_cache_dir(path, root)) or (profile == 'default' and _artifact_dir(path)):
+                        reason = ('perfil build-cache: evidencia de proyecto y artefactos regenerables verificados'
+                                  if profile == 'build-cache' else 'directorio de artefactos verificable')
+                        candidates.append(_candidate(path, root, 'project', reason))
                         dirs.remove(name)
                     else:
                         omitted.append({'path': _display(path, root), 'reason': 'contenido no verificablemente descartable'})
@@ -178,7 +234,9 @@ def scan(project=None, *, include_external=True, max_items=500):
             unique.append(item)
     unique = unique[:max_items]
     plan = {'root': str(root), 'root_evidence': evidence,
-            'include_external': bool(include_external), 'candidates': unique}
+            'include_external': bool(include_external), 'profile': profile,
+            'exclude': sorted(str(value).replace('\\', '/') for value in (exclude or ())),
+            'candidates': unique}
     plan_hash = hashlib.sha256(json.dumps(plan, sort_keys=True, ensure_ascii=False).encode('utf-8')).hexdigest()
     return {'command': 'cleanup-day', 'mode': 'preview', 'read_only': True,
             'root': safe_label(str(root)), 'candidates': unique, 'omitted': omitted,
@@ -186,12 +244,13 @@ def scan(project=None, *, include_external=True, max_items=500):
             'plan_sha256': plan_hash, 'next': 'Revisar la vista previa y ejecutar sólo con autorización explícita.'}
 
 
-def execute(project=None, *, include_external=True, max_items=500, plan_sha256=None,
-            approved_by=None, confirm_cleanup=False):
+def execute(project=None, *, include_external=True, max_items=500, profile='default',
+            exclude=(), plan_sha256=None, approved_by=None, confirm_cleanup=False):
     if (not confirm_cleanup or not isinstance(approved_by, str) or not approved_by.strip()
             or not isinstance(plan_sha256, str) or len(plan_sha256) != 64):
         raise ValueError('Limpieza requiere confirmacion explicita, approved_by y hash del plan.')
-    preview = scan(project, include_external=include_external, max_items=max_items)
+    preview = scan(project, include_external=include_external, max_items=max_items,
+                   profile=profile, exclude=exclude)
     if plan_sha256 != preview['plan_sha256']:
         raise ValueError('El plan cambio; revisar una nueva vista previa.')
     deleted, errors, omitted = [], [], list(preview['omitted'])
